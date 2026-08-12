@@ -1,0 +1,11 @@
+# Training-time environment (GPU server). The challenge's own inference
+# container already has torch/numpy/pandas/scipy/scikit-learn — this list is
+# for the machine you train on, which needs a couple more things plus
+# internet access to fetch the pretrained DINOv2 backbone and dataset.
+torch>=2.3
+nibabel>=3.2
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+scikit-learn>=1.3
+huggingface_hub>=0.23

@@ -1,0 +1,13 @@
+amplifai-codabench/
+
+__pycache__/
+*.pyc
+*.pyo
+
+lirads_model/vendor/dinov2_repo/
+
+.venv/
+venv/
+*.egg-info/
+
+.DS_Store
