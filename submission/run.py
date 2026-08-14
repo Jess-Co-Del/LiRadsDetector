@@ -2,7 +2,8 @@
 """AMPLIFAI submission entry point. See amplifai-codabench/SUBMISSION_GUIDE.md.
 
 Expects, alongside this file in the zip:
-    lirads_model/           <- our package, including lirads_model/vendor/dinov2_repo
+    lirads_model/           <- our package, including
+                                lirads_model/vendor/dinov2-with-registers-large
     model/lirads_model.pt   <- trained checkpoint (see lirads_model/train.py --out)
     packages/                <- bundled pip deps (nibabel, ...) built by build.sh
 """

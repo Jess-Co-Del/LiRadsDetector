@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Assembles the submission directory:
-#   - copies lirads_model/ (including the vendored dinov2 repo) in from the
-#     project root
-#   - bundles nibabel (+ light deps), not present in the challenge's base
-#     image (codalab/codalab-legacy:gpu310) — torch/numpy/pandas/scipy are
-#     already there, don't rebundle them (see SUBMISSION_GUIDE.md's ABI
-#     warning)
-#   - warns if the vendored dinov2 repo or trained checkpoint are missing
+#   - copies lirads_model/ (including the vendored dinov2 snapshot) in from
+#     the project root
+#   - bundles nibabel + transformers (+ light deps), not present in the
+#     challenge's base image (codalab/codalab-legacy:gpu310) — torch/numpy/
+#     pandas/scipy are already there, don't rebundle them (see
+#     SUBMISSION_GUIDE.md's ABI warning)
+#   - warns if the vendored dinov2 snapshot or trained checkpoint are missing
 #
 # Run once before zipping. For ABI safety, run inside (or matching) the
 # target image.
@@ -23,9 +23,11 @@ cp -r ../lirads_model .
 find lirads_model -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
 pip install --target=packages --no-deps -q nibabel packaging importlib-resources typing-extensions
+pip install --target=packages --no-deps -q \
+    transformers filelock huggingface_hub pyyaml regex safetensors tokenizers tqdm typer-slim
 
-if [ ! -d "lirads_model/vendor/dinov2_repo" ]; then
-    echo "WARNING: lirads_model/vendor/dinov2_repo is missing."
+if [ ! -d "lirads_model/vendor/dinov2-with-registers-large" ]; then
+    echo "WARNING: lirads_model/vendor/dinov2-with-registers-large is missing."
     echo "  Run ../scripts/vendor_dinov2.sh once (with internet) before building."
 fi
 

@@ -2,15 +2,17 @@
 
 Builds a synthetic case (random NIfTI volumes + a lesion mask, one phase
 deliberately missing) on disk, runs it through preprocessing and a tiny
-random backbone stub (same forward_features interface as the real torch.hub
-DINOv2 model, but small enough to run instantly on CPU with no download),
-and checks that shapes and the final decoded label are sane end-to-end.
+random backbone stub (same callable/output interface as the real
+transformers AutoModel-loaded DINOv2 model, but small enough to run
+instantly on CPU with no download), and checks that shapes and the final
+decoded label are sane end-to-end.
 """
 
 import os
 import shutil
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import nibabel as nib
 import numpy as np
@@ -25,20 +27,27 @@ from lirads_model.model import LiRadsNet, decode_prediction
 
 
 class TinyBackboneStub(nn.Module):
-    """Mimics the real torch.hub DINOv2 model's forward_features() interface
-    (x_norm_clstoken / x_norm_patchtokens) with a single conv layer, so the
-    smoke test doesn't need internet or minutes of CPU time for ViT-L."""
+    """Mimics the real transformers Dinov2WithRegistersModel's callable
+    interface -- forward(pixel_values=...) returning an object with
+    .last_hidden_state, plus a .config.num_register_tokens -- used by
+    Dinov2SliceEncoder.forward(). Small enough to run instantly on CPU with
+    no download. Uses a nonzero register-token count so the CLS/register/
+    patch token-splitting logic is actually exercised."""
 
-    def __init__(self, embed_dim=config.EMBED_DIM, patch_size=config.PATCH_SIZE):
+    def __init__(self, embed_dim=config.EMBED_DIM, patch_size=config.PATCH_SIZE, num_register_tokens=2):
         super().__init__()
-        self.patch_embed = nn.Conv2d(3, embed_dim, kernel_size=patch_size, stride=patch_size)
-        self.cls_param = nn.Parameter(torch.zeros(1, embed_dim))
+        self.proj = nn.Conv2d(3, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.register_tokens = nn.Parameter(torch.zeros(1, num_register_tokens, embed_dim))
+        self.norm = nn.LayerNorm(embed_dim)
+        self.config = SimpleNamespace(num_register_tokens=num_register_tokens)
 
-    def forward_features(self, x):
-        feat = self.patch_embed(x)
-        patch_tokens = feat.flatten(2).transpose(1, 2)
-        cls_token = self.cls_param.expand(x.shape[0], -1)
-        return {"x_norm_clstoken": cls_token, "x_norm_patchtokens": patch_tokens}
+    def forward(self, pixel_values):
+        patch_tokens = self.proj(pixel_values).flatten(2).transpose(1, 2)  # (B, n_patches, D)
+        cls_tokens = self.cls_token.expand(pixel_values.shape[0], -1, -1)
+        reg_tokens = self.register_tokens.expand(pixel_values.shape[0], -1, -1)
+        tokens = torch.cat([cls_tokens, reg_tokens, patch_tokens], dim=1)
+        return SimpleNamespace(last_hidden_state=self.norm(tokens))
 
 
 def _make_synthetic_case(case_dir: str, case_id: str, shape=(64, 64, 40)) -> None:
@@ -75,7 +84,7 @@ def test_pipeline_smoke() -> None:
         assert phase_data["DRY"] is None
         for phase in ["ART", "VEN", "DEL"]:
             pixel_values, mask_grids, slice_weights = phase_data[phase]
-            assert pixel_values.shape[1:] == (3, config.IMG_SIZE, config.IMG_SIZE)
+            assert pixel_values.shape[1:] == (3, config.PADDED_SIZE, config.PADDED_SIZE)
             assert pixel_values.shape[0] <= 8
             assert mask_grids.shape[1:] == (config.GRID_SIZE, config.GRID_SIZE)
             assert slice_weights.shape[0] == pixel_values.shape[0]

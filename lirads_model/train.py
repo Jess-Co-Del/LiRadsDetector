@@ -1,7 +1,7 @@
 """Trains the head (+ missing-phase embedding) on top of a frozen DINOv2
 backbone, and validates each epoch using the real challenge metric.
 
-Requires internet the first time it runs (torch.hub download of the
+Requires internet the first time it runs (HuggingFace Hub download of the
 pretrained backbone). Saves a single self-contained checkpoint whose
 architecture can later be reconstructed fully offline via
 Dinov2SliceEncoder.from_local() (see scripts/vendor_dinov2.sh).

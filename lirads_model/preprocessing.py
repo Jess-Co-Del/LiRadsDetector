@@ -2,9 +2,11 @@
 
 Pipeline per phase: pick up to MAX_SLICES_PER_CASE axial slices evenly spread
 across the lesion's z-extent, crop each slice to a square region around the
-lesion (with margin), resize to IMG_SIZE, HU-window + ImageNet-normalize into
-a pseudo-RGB image, and downsample the lesion mask to the same 16x16 patch
-grid DINOv2 will produce so it can be used for mask-guided pooling later.
+lesion (with margin), resize to IMG_SIZE, zero-pad up to PADDED_SIZE (a
+PATCH_SIZE multiple, since DINOv2's patch_embed requires exact divisibility),
+HU-window + ImageNet-normalize into a pseudo-RGB image, and downsample the
+lesion mask to the same GRID_SIZE x GRID_SIZE patch grid DINOv2 will produce
+so it can be used for mask-guided pooling later.
 """
 
 import os
@@ -90,6 +92,15 @@ def _resize2d(arr: np.ndarray, out_size: int, order: int) -> np.ndarray:
     return zoom(arr, (fy, fx), order=order)
 
 
+def _pad_to(arr: np.ndarray, out_size: int, value: float) -> np.ndarray:
+    """Zero-ish (constant-`value`) pad a square array up to out_size, split
+    evenly on both sides (extra pixel on the bottom/right if odd)."""
+    pad = out_size - arr.shape[0]
+    top, left = pad // 2, pad // 2
+    bottom, right = pad - top, pad - left
+    return np.pad(arr, ((top, bottom), (left, right)), mode="constant", constant_values=value)
+
+
 def _window_normalize(slice2d: np.ndarray) -> np.ndarray:
     clipped = np.clip(slice2d, config.WINDOW_LOW, config.WINDOW_HIGH)
     return (clipped - config.WINDOW_LOW) / (config.WINDOW_HIGH - config.WINDOW_LOW)
@@ -115,13 +126,19 @@ def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.nd
         mask_resized = _resize2d(mask_crop, config.IMG_SIZE, order=1)
         mask_resized = np.clip(mask_resized, 0.0, 1.0)
 
+        # Windowed-normalize before padding so the pad value (0.0) means "at
+        # or below WINDOW_LOW" -- a well-defined background level -- rather
+        # than padding in raw HU space.
         img_norm = _window_normalize(img_resized).astype(np.float32)
-        chw = np.repeat(img_norm[None, :, :], 3, axis=0)
+        img_padded = _pad_to(img_norm, config.PADDED_SIZE, value=0.0)
+        mask_padded = _pad_to(mask_resized, config.PADDED_SIZE, value=0.0)
+
+        chw = np.repeat(img_padded[None, :, :], 3, axis=0)
         chw = (chw - _IMAGENET_MEAN) / _IMAGENET_STD
         pixel_values.append(chw)
 
-        block = config.IMG_SIZE // config.GRID_SIZE
-        grid = mask_resized.reshape(config.GRID_SIZE, block, config.GRID_SIZE, block).mean(axis=(1, 3))
+        block = config.PADDED_SIZE // config.GRID_SIZE
+        grid = mask_padded.reshape(config.GRID_SIZE, block, config.GRID_SIZE, block).mean(axis=(1, 3))
         mask_grids.append(grid)
 
         weights.append(float(mask2d.sum()))

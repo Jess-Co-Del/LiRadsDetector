@@ -6,7 +6,7 @@ See [`amplifai-codabench/`](amplifai-codabench/) for the challenge's own submiss
 
 ## Approach
 
-A frozen DINOv2 ViT-L/14 (register-token variant, `dinov2_vitl14_reg`) is used as a slice-wise feature extractor:
+A frozen DINOv2 ViT-L/14 (register-token variant, [`facebook/dinov2-with-registers-large`](https://huggingface.co/facebook/dinov2-with-registers-large), loaded via `transformers.AutoModel`) is used as a slice-wise feature extractor:
 
 1. For each of the four CT phases, up to **32 axial slices** are sampled evenly across the lesion's z-extent (all of them if the lesion spans fewer than 32).
 2. Each slice is cropped square around the lesion (with margin), resized to 224×224, HU-windowed and replicated to pseudo-RGB.
@@ -27,15 +27,15 @@ Only the head is trained — the DINOv2 backbone stays frozen throughout.
 lirads_model/
 ├── config.py         # labels, slice cap, image/patch sizes, CT windowing, hub names
 ├── preprocessing.py  # NIfTI loading, lesion slice sampling, crop/resize/window, mask->patch-grid
-├── backbone.py        # frozen DINOv2 wrapper (torch.hub; local/offline or github/pretrained)
+├── backbone.py        # frozen DINOv2 wrapper (transformers.AutoModel; local/offline or hub/pretrained)
 ├── model.py           # LiRadsNet: mask-guided pooling + dual head, decode_prediction()
 ├── dataset.py          # PyTorch Dataset over train/val metadata CSVs + case folders
 ├── train.py            # training loop, validates each epoch with the real challenge metric
 ├── predict.py          # load a checkpoint + run inference on one case
-└── vendor/dinov2_repo/ # populated by scripts/vendor_dinov2.sh, not checked in
+└── vendor/dinov2-with-registers-large/ # populated by scripts/vendor_dinov2.sh, not checked in
 
 scripts/
-└── vendor_dinov2.sh    # one-time: clones dinov2 source for offline backbone reconstruction
+└── vendor_dinov2.sh    # one-time: downloads a local HF Hub snapshot for offline backbone reconstruction
 
 submission/
 ├── run.py              # challenge entry point (SUBMISSION_GUIDE.md contract)
@@ -54,9 +54,9 @@ pip install -r requirements-dev.txt
 
 This is the **training-time** environment (needs a GPU and internet). The challenge's own inference container already ships torch/numpy/pandas/scipy/scikit-learn — see `amplifai-codabench/SUBMISSION_GUIDE.md` for that image's exact contents and the compiled-package ABI warning before bundling anything extra.
 
-## 1. Vendor the DINOv2 source (once, needs internet)
+## 1. Vendor the DINOv2 weights (once, needs internet)
 
-Submission containers have no network access, so the backbone architecture must be reconstructible offline. This clones the model-definition source (no weights) into `lirads_model/vendor/dinov2_repo/`:
+Submission containers have no network access, so the backbone must be loadable offline. This downloads a local HF Hub snapshot (architecture + pretrained weights) into `lirads_model/vendor/dinov2-with-registers-large/`:
 
 ```bash
 ./scripts/vendor_dinov2.sh
@@ -96,7 +96,7 @@ python -m lirads_model.train \
   --out checkpoints/lirads_model.pt
 ```
 
-- Downloads the pretrained backbone via `torch.hub` on first run (needs internet).
+- Downloads the pretrained backbone from the HuggingFace Hub on first run (needs internet).
 - Only head parameters (+ the missing-phase embedding) are optimized; the backbone is always kept in eval mode.
 - Category/ordinal losses are class-weighted by inverse frequency in `train_csv`.
 - After each epoch, predictions on `val_csv` are scored with the actual `amplifai-codabench/evaluate.py` metric (QWK + SCR composite); the checkpoint is overwritten whenever `final_score` improves.
@@ -115,7 +115,7 @@ cd submission
 zip -r submission.zip run.py metadata lirads_model/ model/ packages/
 ```
 
-`build.sh` copies the top-level `lirads_model/` package (including the vendored DINOv2 source) into `submission/` and bundles `nibabel` into `packages/`, warning if the vendored repo or the checkpoint are missing.
+`build.sh` copies the top-level `lirads_model/` package (including the vendored DINOv2 snapshot) into `submission/` and bundles `nibabel` and `transformers` (+ their light deps) into `packages/`, warning if the vendored snapshot or the checkpoint are missing.
 
 ## 6. Test offline before uploading
 

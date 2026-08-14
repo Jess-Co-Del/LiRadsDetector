@@ -8,9 +8,10 @@ from .model import LiRadsNet, decode_prediction
 
 
 def load_model(checkpoint_path: str, device: torch.device, backbone_source: str = "local") -> LiRadsNet:
-    """backbone_source="local": no network (submission container). "github":
-    re-downloads the pretrained backbone before loading our trained weights
-    on top (useful for local dev without a vendored repo copy)."""
+    """backbone_source="local": no network (submission container). "hub":
+    re-downloads the pretrained backbone from the HuggingFace Hub before
+    loading our trained weights on top (useful for local dev without a
+    vendored snapshot)."""
     if backbone_source == "local":
         backbone = Dinov2SliceEncoder.from_local()
     else:

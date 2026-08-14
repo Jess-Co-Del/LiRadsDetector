@@ -1,5 +1,6 @@
 """Shared constants for the AMPLIFAI LI-RADS classifier."""
 
+import math
 import os
 
 # ── Labels ───────────────────────────────────────────────────────────────────
@@ -36,19 +37,24 @@ WINDOW_LOW = WINDOW_CENTER - WINDOW_WIDTH / 2
 WINDOW_HIGH = WINDOW_CENTER + WINDOW_WIDTH / 2
 
 # ── DINOv2 slice encoder ─────────────────────────────────────────────────────
-# Loaded via torch.hub. "github" (needs internet) downloads code+weights and
-# is used for training/weight export. "local" reconstructs the architecture
-# from a vendored copy of the repo (see scripts/vendor_dinov2.sh) with random
-# init — used at inference, where the real weights come from our own
-# checkpoint's state_dict instead, so no network call is needed.
-DINOV2_HUB_REPO = "facebookresearch/dinov2"
-DINOV2_HUB_MODEL = "dinov2_vitl14_reg"
+# Loaded via transformers.AutoModel (HuggingFace Hub). "hub" (needs internet)
+# downloads weights and is used for training/weight export. "local" loads
+# from a vendored local snapshot (see scripts/vendor_dinov2.sh) with
+# local_files_only=True — used at inference, where the real weights come from
+# our own checkpoint's state_dict instead, so no network call is needed.
+DINOV2_MODEL_ID = "facebook/dinov2-with-registers-large"
 
-DINOV2_LOCAL_REPO = os.path.join(os.path.dirname(__file__), "vendor", "dinov2_repo")
+DINOV2_LOCAL_DIR = os.path.join(os.path.dirname(__file__), "vendor", "dinov2-with-registers-large")
 
 PATCH_SIZE = 14
-IMG_SIZE = 224            # multiple of PATCH_SIZE -> exact patch grid, no rounding
-GRID_SIZE = IMG_SIZE // PATCH_SIZE   # 16
+IMG_SIZE = 512            # lesion crop is resized to this before patch-alignment padding
+# DINOv2's patch_embed requires H and W to be exact multiples of PATCH_SIZE, so
+# IMG_SIZE is zero-padded up to the next multiple before going through the
+# backbone (512 -> 518, which is also DINOv2's native pretraining resolution,
+# so this padding doubles as the size where positional-encoding interpolation
+# becomes a no-op instead of a downsample).
+PADDED_SIZE = math.ceil(IMG_SIZE / PATCH_SIZE) * PATCH_SIZE  # 518
+GRID_SIZE = PADDED_SIZE // PATCH_SIZE   # 37
 EMBED_DIM = 1024          # dinov2 ViT-L/14 hidden size (register tokens don't change this)
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
