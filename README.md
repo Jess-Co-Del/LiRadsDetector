@@ -29,9 +29,10 @@ lirads_model/
 ├── preprocessing.py  # NIfTI loading, lesion slice sampling, crop/resize/window, mask->patch-grid
 ├── backbone.py        # frozen DINOv2 wrapper (transformers.AutoModel; local/offline or hub/pretrained)
 ├── model.py           # LiRadsNet: mask-guided pooling + dual head, decode_prediction()
-├── dataset.py          # PyTorch Dataset over train/val metadata CSVs + case folders
-├── train.py            # training loop, validates each epoch with the real challenge metric
-├── predict.py          # load a checkpoint + run inference on one case
+├── dataset.py          # PyTorch Dataset over a metadata CSV (optionally filtered to a case_id list) + case folders
+├── splits.py            # builds N stratified train/val/test folds over a metadata CSV, saved as JSON
+├── train.py            # training loop for one fold, validates each epoch with the real challenge metric, tests on the held-out fold at the end
+├── predict.py          # load a checkpoint + run inference (one case, or CLI over a fold's test split)
 └── vendor/dinov2-with-registers-large/ # populated by scripts/vendor_dinov2.sh, not checked in
 
 scripts/
@@ -72,7 +73,7 @@ hf_hub_download(repo_id="UM-IHC-CA2i/AMPLIFAI", repo_type="dataset", filename="b
 # ...repeat per batch, then unzip each into one shared directory, e.g. ./data/cases/
 ```
 
-Also grab `train_metadata.csv` and `val_metadata.csv` (case_id + `lirads_score` columns, among others). After extraction, cases should sit as `<data_root>/**/<case_id>/{ct,annotations}/...` — `lirads_model/dataset.py` searches recursively so batch subfolders are fine.
+Also grab a metadata CSV (case_id + `lirads_score` columns, among others) covering the whole dataset. After extraction, cases should sit as `<data_root>/**/<case_id>/{ct,annotations}/...` — `lirads_model/dataset.py` searches recursively so batch subfolders are fine.
 
 Note: not every case has all four phases — `preprocessing.py`/`model.py` already handle a phase being absent.
 
@@ -84,13 +85,25 @@ python3 tests/test_smoke.py
 
 Builds a synthetic case on the fly and a tiny random backbone stub, and runs the full preprocessing → pooling → dual-head pipeline, checking shapes and that the decoded label is valid. This is what to re-run after any pipeline change, before spending GPU time.
 
-## 4. Train
+## 4. Build train/val/test splits
+
+```bash
+python -m lirads_model.splits \
+  --metadata_csv ./data/metadata.csv \
+  --n_folds 5 \
+  --out ./data/splits.json
+```
+
+Generates `n_folds` independent stratified-by-`lirads_score` random splits at 70/15/15 train/val/test (fractions configurable via `--train_frac`/`--val_frac`/`--test_frac`), and writes them all to one JSON keyed by fold index (`{"0": {"train": [...], "val": [...], "test": [...]}, "1": {...}, ...}`). Folds are independent draws, not a non-overlapping k-fold partition, so a case's test-set membership can repeat or vary across folds — pick one fold index at training time via `--fold`.
+
+## 5. Train
 
 ```bash
 python -m lirads_model.train \
   --data_root ./data/cases \
-  --train_csv ./data/train_metadata.csv \
-  --val_csv   ./data/val_metadata.csv \
+  --metadata_csv ./data/metadata.csv \
+  --splits_json ./data/splits.json \
+  --fold 0 \
   --epochs 30 \
   --batch_size 4 \
   --out checkpoints/lirads_model.pt
@@ -98,15 +111,33 @@ python -m lirads_model.train \
 
 - Downloads the pretrained backbone from the HuggingFace Hub on first run (needs internet).
 - Only head parameters (+ the missing-phase embedding) are optimized; the backbone is always kept in eval mode.
-- Category/ordinal losses are class-weighted by inverse frequency in `train_csv`.
-- After each epoch, predictions on `val_csv` are scored with the actual `amplifai-codabench/evaluate.py` metric (QWK + SCR composite); the checkpoint is overwritten whenever `final_score` improves.
+- Category/ordinal losses are class-weighted by inverse frequency in the fold's `train` split.
+- After each epoch, predictions on the fold's `val` split are scored with the actual `amplifai-codabench/evaluate.py` metric (QWK + SCR composite); the checkpoint is overwritten whenever `final_score` improves.
 - The saved checkpoint (`model_state_dict`) contains the full model including backbone weights, so it's self-contained — no separate weights-export step needed.
+- `--out`'s filename always gets `_fold{N}` inserted before the extension (e.g. `lirads_model.pt` → `lirads_model_fold0.pt`), whether left at its default or set explicitly, so checkpoints from different folds never collide.
+- Once training finishes, the best checkpoint is reloaded and scored once more on the fold's held-out `test` split (never touched during training); predictions are saved alongside the checkpoint (`--test_predictions_out` to override the path), plus a confusion matrix image (`..._foldN_confusion_matrix.png`) and a per-class precision/recall/F1/support CSV (`..._foldN_per_class_metrics.csv`) saved next to it.
 
 Useful flags: `--max_slices`, `--lr`, `--weight_decay`, `--num_workers`, `--device` (auto-detects CUDA).
 
 Once you've looked at your training label distribution, update `FALLBACK_LABEL` in `lirads_model/config.py` (currently a placeholder `"LR-4"`) to whatever class is actually most common — it's what `run.py` predicts if a case throws during inference.
 
-## 5. Build the submission zip
+### Re-predicting on a fold's test split later
+
+`train.py` already does this once at the end of training, but `predict.py` exposes it as a standalone CLI too — useful for re-scoring a saved checkpoint without retraining, or checking a checkpoint against a different fold's test split:
+
+```bash
+python -m lirads_model.predict \
+  --checkpoint checkpoints/lirads_model_fold0.pt \
+  --data_root ./data/cases \
+  --metadata_csv ./data/metadata.csv \
+  --splits_json ./data/splits.json \
+  --fold 0 \
+  --score
+```
+
+`--score` additionally prints the challenge metric against ground truth and saves a confusion matrix image plus a per-class precision/recall/F1/support CSV next to the predictions CSV (filenames always tagged with the fold, e.g. `..._fold0_confusion_matrix.png` / `..._fold0_per_class_metrics.csv`); omit it to just dump predictions. Defaults to `--backbone_source local` (the vendored offline snapshot); pass `--backbone_source hub` if you haven't vendored it yet.
+
+## 6. Build the submission zip
 
 ```bash
 cp checkpoints/lirads_model.pt submission/model/lirads_model.pt   # mkdir -p submission/model first
@@ -117,7 +148,7 @@ zip -r submission.zip run.py metadata lirads_model/ model/ packages/
 
 `build.sh` copies the top-level `lirads_model/` package (including the vendored DINOv2 snapshot) into `submission/` and bundles `nibabel` and `transformers` (+ their light deps) into `packages/`, warning if the vendored snapshot or the checkpoint are missing.
 
-## 6. Test offline before uploading
+## 7. Test offline before uploading
 
 Network is disabled in the real environment, so test the exact zip inside the same Docker image first — see the full recipe in `amplifai-codabench/SUBMISSION_GUIDE.md` ("Test your submission locally before uploading"):
 

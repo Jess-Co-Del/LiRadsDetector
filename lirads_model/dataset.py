@@ -1,15 +1,15 @@
-"""PyTorch Dataset for AMPLIFAI training/validation metadata + case folders.
+"""PyTorch Dataset for AMPLIFAI metadata + case folders.
 
-Expects a metadata CSV with at least `case_id` and `lirads_score` columns
-(train_metadata.csv / val_metadata.csv from the HF dataset), and a
-`data_root` containing extracted batch zips, i.e. `<data_root>/**/<case_id>/`
-directories laid out as:
+Expects a metadata CSV with at least `case_id` and `lirads_score` columns,
+and a `data_root` containing extracted batch zips, i.e.
+`<data_root>/**/<case_id>/` directories laid out as:
     <case_id>/ct/<case_id>_{ART,VEN,DEL,DRY}.nii.gz
     <case_id>/annotations/lesion.nii.gz
 """
 
 import glob
 import os
+from typing import Optional, Sequence
 
 import pandas as pd
 import torch
@@ -41,13 +41,25 @@ def _find_case_dir(data_root: str, case_id: str) -> str:
 
 
 class LiRadsCaseDataset(Dataset):
-    def __init__(self, metadata_csv: str, data_root: str, max_slices: int = config.MAX_SLICES_PER_CASE):
+    def __init__(
+        self,
+        metadata_csv: str,
+        data_root: str,
+        max_slices: int = config.MAX_SLICES_PER_CASE,
+        case_ids: Optional[Sequence[str]] = None,
+    ):
         df = pd.read_csv(metadata_csv)
         df.columns = df.columns.str.strip().str.lower()
         if "lirads_score" not in df.columns:
             raise ValueError(f"{metadata_csv} is missing a 'lirads_score' column")
         if "case_id" not in df.columns:
             raise ValueError(f"{metadata_csv} is missing a 'case_id' column")
+        if case_ids is not None:
+            wanted = set(str(c) for c in case_ids)
+            df = df[df["case_id"].astype(str).isin(wanted)]
+            missing = wanted - set(df["case_id"].astype(str))
+            if missing:
+                raise ValueError(f"{len(missing)} case_id(s) from the split not found in {metadata_csv}: {sorted(missing)[:5]}...")
         self.df = df.reset_index(drop=True)
         self.data_root = data_root
         self.max_slices = max_slices
