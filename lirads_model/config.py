@@ -6,15 +6,15 @@ import math
 import os
 
 # ── Labels ───────────────────────────────────────────────────────────────────
-ORDINAL_LABELS = ["No lesion", "LR-1", "LR-2", "LR-3", "LR-4", "LR-5"]
+ORDINAL_LABELS = ["LR-1", "LR-2", "LR-3", "LR-4", "LR-5", "LR-M", "LR-TIV", "No lesion"]
 SPECIAL_LABELS = ["LR-M", "LR-TIV"]
 VALID_LABELS = ORDINAL_LABELS + SPECIAL_LABELS
 
 # 3-way super-category head: ordinal vs. the two special classes.
-CAT_NAMES = ["ordinal", "LR-M", "LR-TIV"]
+CAT_NAMES = ["ordinal", "LR-M", "LR-TIV", "No lesion"]
 
 # Used by run.py if a case fails preprocessing/inference entirely.
-FALLBACK_LABEL = "LR-4"
+FALLBACK_LABEL = "LR-3"
 
 # ── CT phases ────────────────────────────────────────────────────────────────
 PHASE_NAMES = ["ART", "VEN", "DEL"]  # , "DRY"

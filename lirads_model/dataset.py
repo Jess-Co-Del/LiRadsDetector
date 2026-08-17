@@ -27,7 +27,8 @@ def label_to_targets(label: str):
         return 1, -1
     if label == "LR-TIV":
         return 2, -1
-    raise ValueError(f"unrecognized LI-RADS label: {label!r}")
+    else:
+        raise ValueError(f"unrecognized LI-RADS label: {label!r}")
 
 
 def encode_clinical_features(row: pd.Series) -> torch.Tensor:
