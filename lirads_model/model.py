@@ -22,6 +22,8 @@ class LiRadsNet(nn.Module):
         hidden1: int = config.HEAD_HIDDEN_1,
         hidden2: int = config.HEAD_HIDDEN_2,
         dropout: float = config.HEAD_DROPOUT,
+        clinical_dim: int = config.CLINICAL_FEATURE_DIM,
+        clinical_embed_dim: int = config.CLINICAL_EMBED_DIM,
     ):
         super().__init__()
         self.backbone = backbone
@@ -35,7 +37,21 @@ class LiRadsNet(nn.Module):
         phase_feat_dim = embed_dim * 2  # masked-pooled patch feat + CLS feat
         self.missing_phase_embed = nn.Parameter(torch.randn(len(self.phase_names), phase_feat_dim) * 0.02)
 
-        in_dim = phase_feat_dim * len(self.phase_names)
+        # Tabular LI-RADS major features (aphe/washout/capsule): a small
+        # Linear projection, scaled by a learned weight before being
+        # concatenated onto the image encoding. Not every case has this
+        # metadata (the challenge submission input never does), so a learned
+        # placeholder embedding stands in when it's absent -- the same
+        # pattern as missing_phase_embed above.
+        self.clinical_encoder = nn.Sequential(
+            nn.LayerNorm(clinical_dim),
+            nn.Linear(clinical_dim, clinical_embed_dim),
+            nn.GELU(),
+        )
+        self.clinical_scale = nn.Parameter(torch.tensor(1.0))
+        self.missing_clinical_embed = nn.Parameter(torch.randn(clinical_embed_dim) * 0.02)
+
+        in_dim = phase_feat_dim * len(self.phase_names) + clinical_embed_dim
         self.head = nn.Sequential(
             nn.LayerNorm(in_dim),
             nn.Linear(in_dim, hidden1),
@@ -77,12 +93,20 @@ class LiRadsNet(nn.Module):
                 )
         return torch.cat(feats, dim=0)  # (phase_feat_dim * n_phases,)
 
+    def encode_clinical(self, clinical_features: Optional[torch.Tensor], batch_size: int) -> torch.Tensor:
+        device = self.missing_clinical_embed.device
+        if clinical_features is None:
+            return self.missing_clinical_embed.unsqueeze(0).expand(batch_size, -1)
+        return self.clinical_encoder(clinical_features.to(device)) * self.clinical_scale
+
     def forward(
         self,
-        batch_phase_data: List[Dict[str, PhaseData]]
+        batch_phase_data: List[Dict[str, PhaseData]],
+        clinical_features: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         case_feats = torch.stack([self.encode_case(pd) for pd in batch_phase_data], dim=0)
-        h = self.head(case_feats)
+        clinical_feats = self.encode_clinical(clinical_features, len(batch_phase_data))
+        h = self.head(torch.cat([case_feats, clinical_feats], dim=1))
         return self.cat_head(h), self.ord_head(h)
 
 

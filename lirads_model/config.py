@@ -68,3 +68,15 @@ MIN_CROP_SIZE_PX = 32  # floor for tiny lesions, in original-slice pixels
 HEAD_HIDDEN_1 = 512
 HEAD_HIDDEN_2 = 128
 HEAD_DROPOUT = 0.2
+
+# ── Clinical/tabular features ────────────────────────────────────────────────
+# Major LI-RADS imaging features recorded per-lesion in train_metadata.csv
+# (aphe, washout_venous, washout_delayed, capsule_venous, capsule_delayed).
+# The challenge's own submission input is just a case_id (see
+# amplifai-codabench/SUBMISSION_GUIDE.md), so this branch is optional per
+# case: LiRadsNet falls back to a learned placeholder embedding when it's
+# absent, the same pattern used for a missing CT phase.
+APHE_CATEGORIES = ["Absent", "Non-rim APHE", "Rim APHE", "Unknown"]
+CLINICAL_BINARY_FEATURES = ["washout_venous", "washout_delayed", "capsule_venous", "capsule_delayed"]
+CLINICAL_FEATURE_DIM = len(APHE_CATEGORIES) + len(CLINICAL_BINARY_FEATURES)  # 8
+CLINICAL_EMBED_DIM = 64

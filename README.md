@@ -13,13 +13,19 @@ A frozen DINOv2 ViT-L/14 (register-token variant, [`facebook/dinov2-with-registe
 3. Every slice is run through the frozen backbone, producing a 16×16 grid of patch tokens + a CLS token.
 4. The patch-token grid is pooled using the lesion mask (downsampled to the same 16×16 grid), so only lesion-covering patches contribute — a mask-guided pooling head, not a predicted segmentation.
 5. Slices are combined per phase, weighted by lesion area in that slice; missing phases get a learned placeholder embedding instead of breaking the pipeline.
-6. The four phases' `[masked-pooled patch feature | CLS feature]` vectors are concatenated and fed to a small MLP with two heads:
+6. The four phases' `[masked-pooled patch feature | CLS feature]` vectors are concatenated with a clinical-feature embedding (see below) and fed to a small MLP with two heads:
    - a 3-way head (ordinal / LR-M / LR-TIV), which drives the **Special Category Recognition** metric,
    - a 5-way ordinal head (LR-1..LR-5), used only when the case is ordinal, which drives **Adjusted QWK**.
 
    This split mirrors exactly how `amplifai-codabench/evaluate.py` scores submissions.
 
 Only the head is trained — the DINOv2 backbone stays frozen throughout.
+
+### Clinical/tabular features
+
+`train_metadata.csv` also records the major LI-RADS imaging features a radiologist annotated per lesion: `aphe`, `washout_venous`, `washout_delayed`, `capsule_venous`, `capsule_delayed`. These are one-hot/binary-encoded into an 8-dim vector (`aphe` one-hot over `Absent`/`Non-rim APHE`/`Rim APHE`/`Unknown`, plus the four binary flags — see `dataset.encode_clinical_features`), run through a small `Linear` projection (`LiRadsNet.clinical_encoder`), and scaled by a learned weight (`clinical_scale`) before being concatenated onto the image encoding.
+
+The challenge's own submission input is just a `case_id` — no clinical metadata — so this branch is optional per case: when `clinical_features` isn't passed to `LiRadsNet.forward` (as in `predict.predict_case`, used by `submission/run.py`), a learned placeholder embedding (`missing_clinical_embed`) stands in, the same pattern already used for a missing CT phase. Training (`train.py`, via `LiRadsCaseDataset`) always supplies the real per-case vector.
 
 ## Layout
 
@@ -73,7 +79,7 @@ hf_hub_download(repo_id="UM-IHC-CA2i/AMPLIFAI", repo_type="dataset", filename="b
 # ...repeat per batch, then unzip each into one shared directory, e.g. ./data/cases/
 ```
 
-Also grab a metadata CSV (case_id + `lirads_score` columns, among others) covering the whole dataset. After extraction, cases should sit as `<data_root>/**/<case_id>/{ct,annotations}/...` — `lirads_model/dataset.py` searches recursively so batch subfolders are fine.
+Also grab a metadata CSV covering the whole dataset, with `case_id`, `lirads_score`, `aphe`, `washout_venous`, `washout_delayed`, `capsule_venous`, `capsule_delayed` columns (among others) — `LiRadsCaseDataset` requires all of these. After extraction, cases should sit as `<data_root>/**/<case_id>/{ct,annotations}/...` — `lirads_model/dataset.py` searches recursively so batch subfolders are fine.
 
 Note: not every case has all four phases — `preprocessing.py`/`model.py` already handle a phase being absent.
 

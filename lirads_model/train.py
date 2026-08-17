@@ -115,7 +115,7 @@ def train(args: argparse.Namespace) -> None:
             batch = next(train_loader)
             cat_idx = batch["cat_idx"].to(device)
             ord_idx = batch["ord_idx"].to(device)
-            logits_cat, logits_ord = model(batch["phase_data"])
+            logits_cat, logits_ord = model(batch["phase_data"], batch["clinical_features"])
             loss = cat_criterion(logits_cat, cat_idx)
 
             ord_mask = cat_idx == 0

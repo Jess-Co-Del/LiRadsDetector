@@ -73,7 +73,7 @@ def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) ->
     model.eval()
     rows = []
     for batch in loader:
-        logits_cat, logits_ord = model(batch["phase_data"])
+        logits_cat, logits_ord = model(batch["phase_data"], batch["clinical_features"])
         for i, case_id in enumerate(batch["case_ids"]):
             label = decode_prediction(logits_cat[i].cpu(), logits_ord[i].cpu())
             rows.append({"case_id": case_id, "prediction": label})

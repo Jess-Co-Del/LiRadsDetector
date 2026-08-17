@@ -30,6 +30,19 @@ def label_to_targets(label: str):
     raise ValueError(f"unrecognized LI-RADS label: {label!r}")
 
 
+def encode_clinical_features(row: pd.Series) -> torch.Tensor:
+    """One-hots `aphe` (missing/unrecognized values fall into an explicit
+    "Unknown" category) and appends the four binary washout/capsule flags,
+    giving a fixed-length config.CLINICAL_FEATURE_DIM vector."""
+    aphe = row["aphe"]
+    aphe = str(aphe).strip() if pd.notna(aphe) else "Unknown"
+    if aphe not in config.APHE_CATEGORIES:
+        aphe = "Unknown"
+    aphe_onehot = [1.0 if aphe == cat else 0.0 for cat in config.APHE_CATEGORIES]
+    binary_feats = [float(row[col]) for col in config.CLINICAL_BINARY_FEATURES]
+    return torch.tensor(aphe_onehot + binary_feats, dtype=torch.float32)
+
+
 def _find_case_dir(data_root: str, case_id: str) -> str:
     direct = os.path.join(data_root, case_id)
     if os.path.isdir(direct):
@@ -52,6 +65,10 @@ class LiRadsCaseDataset(Dataset):
             raise ValueError(f"{metadata_csv} is missing a 'lirads_score' column")
         if "case_id" not in df.columns:
             raise ValueError(f"{metadata_csv} is missing a 'case_id' column")
+        clinical_cols = ["aphe"] + config.CLINICAL_BINARY_FEATURES
+        missing_cols = [c for c in clinical_cols if c not in df.columns]
+        if missing_cols:
+            raise ValueError(f"{metadata_csv} is missing clinical feature column(s): {missing_cols}")
         if case_ids is not None:
             wanted = set(str(c) for c in case_ids)
             df = df[df["case_id"].astype(str).isin(wanted)]
@@ -75,7 +92,11 @@ class LiRadsCaseDataset(Dataset):
         phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, self.max_slices)
 
         cat_idx, ord_idx = label_to_targets(str(row["lirads_score"]))
-        return {"case_id": case_id, "phase_data": phase_data, "cat_idx": cat_idx, "ord_idx": ord_idx}
+        clinical_features = encode_clinical_features(row)
+        return {
+            "case_id": case_id, "phase_data": phase_data, "cat_idx": cat_idx, "ord_idx": ord_idx,
+            "clinical_features": clinical_features,
+        }
 
 
 def collate_cases(batch: list) -> dict:
@@ -84,4 +105,5 @@ def collate_cases(batch: list) -> dict:
         "phase_data": [b["phase_data"] for b in batch],
         "cat_idx": torch.tensor([b["cat_idx"] for b in batch], dtype=torch.long),
         "ord_idx": torch.tensor([b["ord_idx"] for b in batch], dtype=torch.long),
+        "clinical_features": torch.stack([b["clinical_features"] for b in batch], dim=0),
     }
