@@ -66,8 +66,10 @@ def predict_case(
 
 @torch.no_grad()
 def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) -> pd.DataFrame:
-    """Batched inference over a LiRadsCaseDataset DataLoader. Returns a
-    (case_id, prediction) DataFrame in amplifai-codabench/evaluate.py's format."""
+    """
+    Batched inference over a LiRadsCaseDataset DataLoader. Returns a
+    (case_id, prediction) DataFrame in amplifai-codabench/evaluate.py's format
+    """
     model.eval()
     rows = []
     for batch in loader:
@@ -79,11 +81,13 @@ def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) ->
 
 
 def save_confusion_matrix(gt_labels, pred_labels, out_path: str) -> None:
-    """Plots a (ground truth rows x predicted columns) confusion matrix over
+    """
+    Plots a (ground truth rows x predicted columns) confusion matrix over
     config.VALID_LABELS and saves it as an image. matplotlib is imported
     lazily here rather than at module level, since predict.py's load_model/
     predict_case are also imported by submission/run.py, whose container
-    doesn't bundle matplotlib."""
+    doesn't bundle matplotlib
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -105,8 +109,10 @@ def save_confusion_matrix(gt_labels, pred_labels, out_path: str) -> None:
 
 
 def compute_per_class_metrics(gt_labels, pred_labels) -> pd.DataFrame:
-    """Per-class precision/recall/F1/support over config.VALID_LABELS.
-    Classes absent from both gt and pred still get a (zero-valued) row."""
+    """
+    Per-class precision/recall/F1/support over config.VALID_LABELS.
+    Classes absent from both gt and pred still get a (zero-valued) row
+    """
     precision, recall, f1, support = precision_recall_fscore_support(
         gt_labels, pred_labels, labels=config.VALID_LABELS, zero_division=0,
     )
@@ -131,8 +137,10 @@ def predict_fold_test_set(
     num_workers: int = 4,
     backbone_source: str = "local",
 ) -> pd.DataFrame:
-    """Runs the model in `checkpoint_path` over the `test` split of `fold`
-    (looked up in `splits_json`), returning a (case_id, prediction) DataFrame."""
+    """
+    Runs the model in `checkpoint_path` over the `test` split of `fold`
+    (looked up in `splits.json`), returning a (case_id, prediction) DataFrame
+    """
     test_case_ids = load_fold(splits_json, fold)["test"]
     test_ds = LiRadsCaseDataset(metadata_csv, data_root, max_slices, case_ids=test_case_ids)
     test_loader = DataLoader(

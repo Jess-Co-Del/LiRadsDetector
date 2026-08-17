@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 *.pyo
 
-lirads_model/vendor/dinov2*
+lirads_model/vendor/dinov2-*
 
 *.csv
 *.zip

@@ -27,7 +27,7 @@ SLICE_AXIS = 2
 # ── Slice sampling ───────────────────────────────────────────────────────────
 # Cap on how many axial slices (evenly spread across the lesion's z-extent)
 # are fed through the backbone per case, per phase.
-MAX_SLICES_PER_CASE = 32
+MAX_SLICES_PER_CASE = 8
 
 # ── CT windowing ─────────────────────────────────────────────────────────────
 # Generic abdominal soft-tissue window (HU), applied identically to all four
@@ -50,11 +50,7 @@ DINOV2_LOCAL_DIR = os.path.join(os.path.dirname(__file__), "vendor", "dinov2-lar
 
 PATCH_SIZE = 14
 IMG_SIZE = 224            # lesion crop is resized to this before patch-alignment padding
-# DINOv2's patch_embed requires H and W to be exact multiples of PATCH_SIZE, so
-# IMG_SIZE is zero-padded up to the next multiple before going through the
-# backbone (512 -> 518, which is also DINOv2's native pretraining resolution,
-# so this padding doubles as the size where positional-encoding interpolation
-# becomes a no-op instead of a downsample).
+# DINOv2's patch_embed requires H and W to be exact multiples of PATCH_SIZE.
 PADDED_SIZE = math.ceil(IMG_SIZE / PATCH_SIZE) * PATCH_SIZE  # 518
 GRID_SIZE = PADDED_SIZE // PATCH_SIZE   # 37
 EMBED_DIM = 1024          # dinov2 ViT-L/14 hidden size (register tokens don't change this)

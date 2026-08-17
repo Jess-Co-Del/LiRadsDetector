@@ -34,10 +34,8 @@ def _find_case_dir(data_root: str, case_id: str) -> str:
     direct = os.path.join(data_root, case_id)
     if os.path.isdir(direct):
         return direct
-    matches = glob.glob(os.path.join(data_root, "**", case_id), recursive=True)
-    if not matches:
+    else:
         raise FileNotFoundError(f"case directory for {case_id!r} not found under {data_root!r}")
-    return matches[0]
 
 
 class LiRadsCaseDataset(Dataset):

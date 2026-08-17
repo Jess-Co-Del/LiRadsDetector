@@ -59,6 +59,9 @@ class InfiniteDataLoader:
 
 
 def train(args: argparse.Namespace) -> None:
+    print_to_log("=" * 70)
+    print_to_log(f"Starting training. Fold = {args.fold}.")
+    print_to_log("=" * 70)
     device = torch.device(args.device)
     args.out = fold_tagged_path(args.out, args.fold)
 
@@ -78,6 +81,8 @@ def train(args: argparse.Namespace) -> None:
         num_workers=args.num_workers, collate_fn=collate_cases,
     )
 
+    print_to_log(f"Datasets loaded.")
+
     backbone = Dinov2SliceEncoder.from_pretrained()
     model = LiRadsNet(backbone).to(device)
 
@@ -94,9 +99,8 @@ def train(args: argparse.Namespace) -> None:
 
     out_dir = os.path.dirname(os.path.abspath(args.out))
     os.makedirs(out_dir, exist_ok=True)
-    print_to_log("=" * 70)
-    print_to_log(f"Starting training.")
-    print_to_log("=" * 70)
+
+    print_to_log(f"Model loaded.")
 
     best_score = -1.0
     for epoch in range(1, args.epochs + 1):
@@ -203,7 +207,7 @@ def main() -> None:
     parser.add_argument("--test_predictions_out", default=None, help="where to save test-split predictions CSV")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--num_iterations_per_epoch", type=int, default=40)
+    parser.add_argument("--num_iterations_per_epoch", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--max_slices", type=int, default=config.MAX_SLICES_PER_CASE)
