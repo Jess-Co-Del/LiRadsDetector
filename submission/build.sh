@@ -22,16 +22,17 @@ rm -rf lirads_model
 cp -r ../lirads_model .
 find lirads_model -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
+pip install --target=packages --no-deps -q transformers==4.48 tokenizers==0.21 huggingface_hub==0.24.0
 pip install --target=packages --no-deps -q nibabel packaging importlib-resources typing-extensions
 pip install --target=packages --no-deps -q \
-    transformers filelock huggingface_hub pyyaml regex safetensors tokenizers tqdm typer-slim
+    filelock pyyaml regex safetensors tqdm typer-slim
 
 if [ ! -d "lirads_model/vendor/dinov2-with-registers-large" ]; then
     echo "WARNING: lirads_model/vendor/dinov2-with-registers-large is missing."
     echo "  Run ../scripts/vendor_dinov2.sh once (with internet) before building."
 fi
 
-if [ ! -f "model/lirads_model.pt" ]; then
+if [ ! -f "checkpoints/lirads_model.pt" ]; then
     echo "WARNING: model/lirads_model.pt is missing."
     echo "  Copy your trained checkpoint there (see lirads_model/train.py --out)."
 fi

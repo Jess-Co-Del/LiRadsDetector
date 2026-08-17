@@ -1,13 +1,6 @@
-"""Frozen DINOv2 ViT-L/14 (with-registers variant) slice encoder, loaded via
-HuggingFace `transformers`.
-
-`source="hub"` downloads weights from the HuggingFace Hub (needs internet)
-and is used for training / weight export. `source="local"` loads from a
-vendored local snapshot (see scripts/vendor_dinov2.sh) via
-`local_files_only=True` — the real weights are loaded afterwards from our own
-checkpoint via LiRadsNet.load_state_dict(), so no network call is needed.
-This is what submission/run.py uses at inference, since the challenge
-container has no outbound network access.
+"""
+Frozen DINOv2 ViT-L/14 (with-registers variant) slice encoder, loaded via
+HuggingFace `transformers`
 """
 import torch
 import torch.nn as nn
@@ -49,6 +42,6 @@ class Dinov2SliceEncoder(nn.Module):
         # embeddings to the input resolution internally, so no custom
         # resolution-aware interpolation is needed here.
         last_hidden_state = self.backbone(pixel_values=pixel_values).last_hidden_state
-        num_register_tokens = self.backbone.config.num_register_tokens
+        num_register_tokens = self.backbone.config.num_register_tokens if hasattr(self.backbone.config, 'num_register_tokens') else 0
         # token layout is [CLS, reg_1..reg_R, patch_1..patch_N]
         return last_hidden_state[:, 1 + num_register_tokens :], last_hidden_state[:, 0]

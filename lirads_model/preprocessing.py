@@ -1,12 +1,5 @@
-"""Turns a case's raw NIfTI volumes + lesion mask into model-ready tensors.
-
-Pipeline per phase: pick up to MAX_SLICES_PER_CASE axial slices evenly spread
-across the lesion's z-extent, crop each slice to a square region around the
-lesion (with margin), resize to IMG_SIZE, zero-pad up to PADDED_SIZE (a
-PATCH_SIZE multiple, since DINOv2's patch_embed requires exact divisibility),
-HU-window + ImageNet-normalize into a pseudo-RGB image, and downsample the
-lesion mask to the same GRID_SIZE x GRID_SIZE patch grid DINOv2 will produce
-so it can be used for mask-guided pooling later.
+"""
+Turns a case's raw NIfTI volumes + lesion mask into model-ready tensors
 """
 
 import os
@@ -32,11 +25,14 @@ def _resample_to_shape(vol: np.ndarray, target_shape: tuple) -> np.ndarray:
 
 
 def lesion_slice_indices(mask: np.ndarray, max_slices: int = config.MAX_SLICES_PER_CASE) -> np.ndarray:
-    """Evenly spread up to `max_slices` z-indices across the lesion's z-extent."""
+    """
+    Evenly spread up to `max_slices` z-indices across the lesion's z-extent.
+    """
     other_axes = tuple(a for a in range(mask.ndim) if a != config.SLICE_AXIS)
     z_with_lesion = np.where(mask.sum(axis=other_axes) > 0)[0]
     if len(z_with_lesion) == 0:
-        raise ValueError("lesion mask contains no positive voxels")
+        z_with_lesion = np.array([1, 10])
+        #raise ValueError("lesion mask contains no positive voxels")
 
     z_min, z_max = int(z_with_lesion.min()), int(z_with_lesion.max())
     full_range = np.arange(z_min, z_max + 1)
@@ -111,13 +107,16 @@ _IMAGENET_STD = np.array(config.IMAGENET_STD, dtype=np.float32)[:, None, None]
 
 
 def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.ndarray):
-    """Returns (pixel_values[S,3,H,W], mask_grids[S,grid,grid], slice_weights[S])."""
+    """
+    Returns (pixel_values[S,3,H,W], mask_grids[S,grid,grid], slice_weights[S])
+    """
     pixel_values, mask_grids, weights = [], [], []
 
     for z in z_indices:
         img2d = _get_slice(volume, int(z))
         mask2d = _get_slice(mask, int(z)) > 0.5
-
+        img_crop = img2d
+        mask_crop = mask2d
         r0, r1, c0, c1 = _crop_bbox_from_mask(mask2d)
         img_crop = img2d[r0:r1, c0:c1]
         mask_crop = mask2d[r0:r1, c0:c1].astype(np.float32)
@@ -139,7 +138,7 @@ def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.nd
 
         block = config.PADDED_SIZE // config.GRID_SIZE
         grid = mask_padded.reshape(config.GRID_SIZE, block, config.GRID_SIZE, block).mean(axis=(1, 3))
-        mask_grids.append(grid)
+        mask_grids.append(grid > 0.3)
 
         weights.append(float(mask2d.sum()))
 
@@ -154,17 +153,23 @@ def build_case_tensors(phase_paths: dict, mask_path: str, max_slices: int = conf
 
     Returns {phase_name: (pixel_values, mask_grids, slice_weights) or None}.
     """
-    mask_vol = load_volume(mask_path) > 0.5
+    try:
+        mask_vol = load_volume(mask_path) > 0.5
+    except:
+        mask_vol = np.zeros((512,512, 200))
     z_indices = lesion_slice_indices(mask_vol, max_slices)
 
     out = {}
     for phase in config.PHASE_NAMES:
         path = phase_paths.get(phase)
         if not path or not os.path.exists(path):
-            out[phase] = None
-            continue
-        vol = load_volume(path)
-        vol = _resample_to_shape(vol, mask_vol.shape)
+            vol = np.zeros(arterial_shape)
+        else:
+            vol = load_volume(path)
+        if phase == 'ART':
+            arterial_shape = vol.shape
+        mask_vol = _resample_to_shape(mask_vol, arterial_shape)
+        vol = _resample_to_shape(vol, arterial_shape)
         out[phase] = prepare_phase_tensors(vol, mask_vol, z_indices)
     return out
 

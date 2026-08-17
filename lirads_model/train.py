@@ -1,17 +1,5 @@
-"""Trains the head (+ missing-phase embedding) on top of a frozen DINOv2
-backbone, and validates each epoch using the real challenge metric.
-
-Requires internet the first time it runs (HuggingFace Hub download of the
-pretrained backbone). Saves a single self-contained checkpoint whose
-architecture can later be reconstructed fully offline via
-Dinov2SliceEncoder.from_local() (see scripts/vendor_dinov2.sh).
-
-Usage:
-    python -m lirads_model.train \
-        --data_root /path/to/extracted/cases \
-        --train_csv /path/to/train_metadata.csv \
-        --val_csv   /path/to/val_metadata.csv \
-        --out checkpoints/lirads_model.pt
+"""
+Trainer of LiRadsNet
 """
 
 import argparse
@@ -24,6 +12,10 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from datetime import datetime
+from time import time
+
+from batchgenerators.dataloading.nondet_multi_threaded_augmenter import NonDetMultiThreadedAugmenter
 
 from . import config
 from .backbone import Dinov2SliceEncoder
@@ -33,6 +25,13 @@ from .model import LiRadsNet, decode_prediction
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO_ROOT, "amplifai-codabench"))
 from evaluate import evaluate as compute_challenge_score  # noqa: E402
+
+
+def print_to_log(a):
+    timestamp = time()
+    dt_object = datetime.fromtimestamp(timestamp)
+    args = (f"{dt_object}:", a)
+    print(*args)
 
 
 def compute_class_weights(counts: dict, num_classes: int) -> torch.Tensor:
@@ -54,15 +53,33 @@ def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) ->
     return pd.DataFrame(rows)
 
 
+class InfiniteDataLoader:
+    def __init__(self, dataloader):
+        self.dataloader = dataloader
+        self.iterator = iter(self.dataloader)
+        
+    def __iter__(self):
+        return self
+        
+    def __next__(self):
+        try:
+            return next(self.iterator)
+        except StopIteration:
+            self.iterator = iter(self.dataloader)
+            return next(self.iterator)
+
+
 def train(args: argparse.Namespace) -> None:
     device = torch.device(args.device)
 
     train_ds = LiRadsCaseDataset(args.train_csv, args.data_root, args.max_slices)
     val_ds = LiRadsCaseDataset(args.val_csv, args.data_root, args.max_slices)
 
-    train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, collate_fn=collate_cases,
+    train_loader = InfiniteDataLoader(
+        DataLoader(
+            train_ds, batch_size=args.batch_size, shuffle=True,
+            num_workers=args.num_workers, collate_fn=collate_cases,
+        )
     )
     val_loader = DataLoader(
         val_ds, batch_size=args.batch_size, shuffle=False,
@@ -85,17 +102,23 @@ def train(args: argparse.Namespace) -> None:
 
     out_dir = os.path.dirname(os.path.abspath(args.out))
     os.makedirs(out_dir, exist_ok=True)
+    print_to_log("=" * 70)
+    print_to_log(f"Starting training.")
+    print_to_log("=" * 70)
 
     best_score = -1.0
     for epoch in range(1, args.epochs + 1):
+        print_to_log('')
+        print_to_log(f"Epoch {epoch}.")
+        print_to_log(f"Current learning rate: {np.round(optimizer.param_groups[0]['lr'], decimals=5)}")
         model.train()
         model.backbone.eval()  # frozen backbone: never let dropout/drop-path move it
 
         total_loss, n_batches = 0.0, 0
-        for batch in train_loader:
+        for _ in range(args.num_iterations_per_epoch):
+            batch = next(train_loader)
             cat_idx = batch["cat_idx"].to(device)
             ord_idx = batch["ord_idx"].to(device)
-
             logits_cat, logits_ord = model(batch["phase_data"])
             loss = cat_criterion(logits_cat, cat_idx)
 
@@ -120,8 +143,8 @@ def train(args: argparse.Namespace) -> None:
             val_preds.to_csv(pred_path, index=False)
             result = compute_challenge_score(gt_path, pred_path, bootstrap=False)
 
-        print(
-            f"epoch {epoch}: train_loss={avg_loss:.4f} "
+        print_to_log(
+            f"Epoch {epoch}: train_loss={avg_loss:.4f} "
             f"final_score={result['final_score']:.4f} "
             f"qwk={result['adjusted_qwk']:.4f} scr={result['special_category_recognition']:.4f}"
         )
@@ -129,9 +152,9 @@ def train(args: argparse.Namespace) -> None:
         if result["final_score"] > best_score:
             best_score = result["final_score"]
             torch.save({"model_state_dict": model.state_dict()}, args.out)
-            print(f"  saved new best checkpoint to {args.out} (score={best_score:.4f})")
+            print_to_log(f"  saved new best checkpoint to {args.out} (score={best_score:.4f})")
 
-    print(f"training complete. best val final_score={best_score:.4f}")
+    print_to_log(f"Training complete. best val final_score={best_score:.4f}")
 
 
 def main() -> None:
@@ -141,6 +164,7 @@ def main() -> None:
     parser.add_argument("--val_csv", required=True, help="val_metadata.csv path")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--num_iterations_per_epoch", type=int, default=40)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--max_slices", type=int, default=config.MAX_SLICES_PER_CASE)

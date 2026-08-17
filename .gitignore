@@ -4,10 +4,21 @@ __pycache__/
 *.pyc
 *.pyo
 
-lirads_model/vendor/dinov2_repo/
+lirads_model/vendor/dinov2*
+
+*.csv
+*.zip
+*.err
+*.out
+submit.sh
 
 .venv/
 venv/
 *.egg-info/
+checkpoints/
+submission/lirads_model
+submission/model
+submission/packages
+
 
 .DS_Store

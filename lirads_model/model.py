@@ -1,17 +1,5 @@
-"""LiRadsNet: mask-guided-pooled DINOv2 features -> dual classification head.
-
-Per phase: each of up to MAX_SLICES_PER_CASE slices is embedded by the frozen
-DINOv2 backbone into a (grid, grid, embed_dim) patch-token map + a CLS token.
-The patch-token map is average-pooled using the lesion's downsampled mask
-(so only lesion-covering patches contribute), then slices are combined with
-weights proportional to lesion area in that slice. The four phases'
-[masked-pooled patch feature | CLS feature] vectors are concatenated and fed
-to a small MLP with two heads:
-  - a 3-way head (ordinal / LR-M / LR-TIV) that drives Special Category
-    Recognition,
-  - a 5-way ordinal head (LR-1..LR-5) used only when the case is ordinal,
-    that drives Adjusted QWK.
-This mirrors the exact split evaluate.py uses to score submissions.
+"""
+LiRadsNet: mask-guided-pooled DINOv2 features -> dual classification head
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -40,6 +28,9 @@ class LiRadsNet(nn.Module):
         self.embed_dim = embed_dim
         self.grid_size = grid_size
         self.phase_names = config.PHASE_NAMES
+
+        for p in self.backbone.parameters():
+            p.requires_grad = False
 
         phase_feat_dim = embed_dim * 2  # masked-pooled patch feat + CLS feat
         self.missing_phase_embed = nn.Parameter(torch.randn(len(self.phase_names), phase_feat_dim) * 0.02)
@@ -86,7 +77,10 @@ class LiRadsNet(nn.Module):
                 )
         return torch.cat(feats, dim=0)  # (phase_feat_dim * n_phases,)
 
-    def forward(self, batch_phase_data: List[Dict[str, PhaseData]]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        batch_phase_data: List[Dict[str, PhaseData]]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         case_feats = torch.stack([self.encode_case(pd) for pd in batch_phase_data], dim=0)
         h = self.head(case_feats)
         return self.cat_head(h), self.ord_head(h)

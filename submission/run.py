@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""AMPLIFAI submission entry point. See amplifai-codabench/SUBMISSION_GUIDE.md.
+"""
+
+AMPLIFAI Challenge — submission entry point.
 
 Expects, alongside this file in the zip:
     lirads_model/           <- our package, including
@@ -14,14 +16,15 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "packages"))
 sys.path.insert(0, _HERE)
-
+import transformers
+print('TRANSFORMERS VERSION', transformers.__version__)
 import pandas as pd
 import torch
 
 from lirads_model import config
 from lirads_model.predict import load_model, predict_case
 
-DATA_ROOT = "/app/data/cases"
+DATA_ROOT = "/leonardo_scratch/fast/EUHPC_D35_139/nnunet_base/nnunet_format/amplifai/batch_001/cases"  #"/app/data/cases"
 CHECKPOINT_PATH = os.path.join(_HERE, "model", "lirads_model.pt")
 
 
