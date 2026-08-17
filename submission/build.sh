@@ -6,7 +6,7 @@
 #     challenge's base image (codalab/codalab-legacy:gpu310) — torch/numpy/
 #     pandas/scipy are already there, don't rebundle them (see
 #     SUBMISSION_GUIDE.md's ABI warning)
-#   - warns if the vendored dinov2 snapshot or trained checkpoint are missing
+#   - warns if the vendored dinov2 snapshot or trained checkpoint(s) are missing
 #
 # Run once before zipping. For ABI safety, run inside (or matching) the
 # target image.
@@ -14,6 +14,9 @@
 # Usage:
 #   ./build.sh
 #   zip -r submission.zip run.py metadata lirads_model/ model/ packages/
+#
+# model/ may hold one or more .pt checkpoints -- run.py majority-votes across
+# all of them when there's more than one.
 
 set -e
 cd "$(dirname "$0")"
@@ -32,9 +35,12 @@ if [ ! -d "lirads_model/vendor/dinov2-with-registers-large" ]; then
     echo "  Run ../scripts/vendor_dinov2.sh once (with internet) before building."
 fi
 
-if [ ! -f "checkpoints/lirads_model.pt" ]; then
-    echo "WARNING: model/lirads_model.pt is missing."
-    echo "  Copy your trained checkpoint there (see lirads_model/train.py --out)."
+n_checkpoints=$(find model -maxdepth 1 -name '*.pt' 2>/dev/null | wc -l)
+if [ "$n_checkpoints" -eq 0 ]; then
+    echo "WARNING: no .pt checkpoints found in model/."
+    echo "  Copy at least one trained checkpoint there (see lirads_model/train.py --out)."
+else
+    echo "Found $n_checkpoints checkpoint(s) in model/."
 fi
 
 echo "packages/ and lirads_model/ ready."

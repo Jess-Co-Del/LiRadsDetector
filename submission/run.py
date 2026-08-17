@@ -6,10 +6,13 @@ AMPLIFAI Challenge — submission entry point.
 Expects, alongside this file in the zip:
     lirads_model/           <- our package, including
                                 lirads_model/vendor/dinov2-with-registers-large
-    model/lirads_model.pt   <- trained checkpoint (see lirads_model/train.py --out)
+    model/*.pt               <- trained checkpoint(s) (see lirads_model/train.py --out).
+                                One file predicts normally; more than one is
+                                majority-voted across models per case.
     packages/                <- bundled pip deps (nibabel, ...) built by build.sh
 """
 
+import glob
 import os
 import sys
 
@@ -22,10 +25,10 @@ import pandas as pd
 import torch
 
 from lirads_model import config
-from lirads_model.predict import load_model, predict_case
+from lirads_model.predict import load_models, predict_case_ensemble
 
 DATA_ROOT = "/leonardo_scratch/fast/EUHPC_D35_139/nnunet_base/nnunet_format/amplifai/batch_001/cases"  #"/app/data/cases"
-CHECKPOINT_PATH = os.path.join(_HERE, "model", "lirads_model.pt")
+MODEL_DIR = os.path.join(_HERE, "model")
 
 
 def main() -> None:
@@ -38,14 +41,19 @@ def main() -> None:
     case_ids = cases["case_id"].tolist()
     print(f"Processing {len(case_ids)} cases...")
 
+    checkpoint_paths = sorted(glob.glob(os.path.join(MODEL_DIR, "*.pt")))
+    if not checkpoint_paths:
+        raise FileNotFoundError(f"no .pt checkpoints found in {MODEL_DIR}")
+    print(f"Loading {len(checkpoint_paths)} model(s): {[os.path.basename(p) for p in checkpoint_paths]}")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(CHECKPOINT_PATH, device, backbone_source="local")
+    models = load_models(checkpoint_paths, device, backbone_source="local")
 
     results = []
     for case_id in case_ids:
         case_dir = os.path.join(DATA_ROOT, case_id)
         try:
-            prediction = predict_case(model, case_dir, case_id, device)
+            prediction = predict_case_ensemble(models, case_dir, case_id, device)
         except Exception as e:
             print(f"  WARNING: {case_id} failed ({e}); using fallback label", file=sys.stderr)
             prediction = config.FALLBACK_LABEL

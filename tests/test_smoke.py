@@ -1,11 +1,10 @@
 """CPU-only, no-internet smoke test for the full LiRadsNet pipeline.
 
-Builds a synthetic case (random NIfTI volumes + a lesion mask, one phase
-deliberately missing) on disk, runs it through preprocessing and a tiny
-random backbone stub (same callable/output interface as the real
-transformers AutoModel-loaded DINOv2 model, but small enough to run
-instantly on CPU with no download), and checks that shapes and the final
-decoded label are sane end-to-end.
+Builds a synthetic case (random NIfTI volumes + a lesion mask) on disk, runs
+it through preprocessing and a tiny random backbone stub (same
+callable/output interface as the real transformers AutoModel-loaded DINOv2
+model, but small enough to run instantly on CPU with no download), and
+checks that shapes and the final decoded label are sane end-to-end.
 """
 
 import os
@@ -64,8 +63,6 @@ def _make_synthetic_case(case_dir: str, case_id: str, shape=(64, 64, 40)) -> Non
     nib.save(nib.Nifti1Image(mask, affine), os.path.join(ann_dir, "lesion.nii.gz"))
 
     for phase in config.PHASE_NAMES:
-        if phase == "DRY":
-            continue  # deliberately missing, to exercise that code path
         vol = rng.normal(50, 100, size=shape).astype(np.float32)
         nib.save(nib.Nifti1Image(vol, affine), os.path.join(ct_dir, f"{case_id}_{phase}.nii.gz"))
 
@@ -81,13 +78,13 @@ def test_pipeline_smoke() -> None:
         mask_path = preprocessing.find_case_mask_path(case_dir)
         phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, max_slices=8)
 
-        assert phase_data["DRY"] is None
-        for phase in ["ART", "VEN", "DEL"]:
-            pixel_values, mask_grids, slice_weights = phase_data[phase]
+        for phase in config.PHASE_NAMES:
+            pixel_values, mask_grids, slice_weights, volume = phase_data[phase]
             assert pixel_values.shape[1:] == (3, config.PADDED_SIZE, config.PADDED_SIZE)
             assert pixel_values.shape[0] <= 8
             assert mask_grids.shape[1:] == (config.GRID_SIZE, config.GRID_SIZE)
             assert slice_weights.shape[0] == pixel_values.shape[0]
+            assert volume.shape == (pixel_values.shape[0], config.IMG_SIZE, config.IMG_SIZE)
 
         backbone = Dinov2SliceEncoder(TinyBackboneStub())
         model = LiRadsNet(backbone)

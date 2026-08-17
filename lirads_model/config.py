@@ -80,3 +80,15 @@ APHE_CATEGORIES = ["Absent", "Non-rim APHE", "Rim APHE", "Unknown"]
 CLINICAL_BINARY_FEATURES = ["washout_venous", "washout_delayed", "capsule_venous", "capsule_delayed"]
 CLINICAL_FEATURE_DIM = len(APHE_CATEGORIES) + len(CLINICAL_BINARY_FEATURES)  # 8
 CLINICAL_EMBED_DIM = 64
+
+# ── Per-phase 3D-CNN volume encoder ──────────────────────────────────────────
+# Alongside the 2D DINOv2 slice encoder, each phase's stack of lesion-cropped
+# slices is also treated as a single (1, S, IMG_SIZE, IMG_SIZE) volume and run
+# through a small 3D CNN (one per phase, since contrast behavior differs by
+# phase), giving the model genuine cross-slice 3D context that per-slice 2D
+# processing can't see. An AdaptiveAvgPool3d collapses depth to 1 regardless
+# of how many slices S were sampled, producing a fixed-size single-channel
+# CNN_FEATURE_MAP_SIZE x CNN_FEATURE_MAP_SIZE feature map per phase, flattened
+# and concatenated onto that phase's DINOv2 feature vector.
+CNN_FEATURE_MAP_SIZE = 16
+CNN_HIDDEN_CHANNELS = 32

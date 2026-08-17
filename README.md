@@ -6,26 +6,33 @@ See [`amplifai-codabench/`](https://github.com/UM-IHC-CA2i/amplifai-codabench.gi
 
 ## Approach
 
-A frozen DINOv2 ViT-L/14 (register-token variant, [`facebook/dinov2-with-registers-large`](https://huggingface.co/facebook/dinov2-with-registers-large), loaded via `transformers.AutoModel`) is used as a slice-wise feature extractor:
+The model is a hybrid of two image encoders per CT phase — a frozen 2D DINOv2 ViT-L/14 (register-token variant, [`facebook/dinov2-with-registers-large`](https://huggingface.co/facebook/dinov2-with-registers-large), loaded via `transformers.AutoModel`) reading each slice independently, plus a small trainable 3D CNN reading the same slices as one volume:
 
 1. For each of the four CT phases, up to **32 axial slices** are sampled evenly across the lesion's z-extent (all of them if the lesion spans fewer than 32).
 2. Each slice is cropped square around the lesion (with margin), resized to 224×224, HU-windowed and replicated to pseudo-RGB.
 3. Every slice is run through the frozen backbone, producing a 16×16 grid of patch tokens + a CLS token.
 4. The patch-token grid is pooled using the lesion mask (downsampled to the same 16×16 grid), so only lesion-covering patches contribute — a mask-guided pooling head, not a predicted segmentation.
 5. Slices are combined per phase, weighted by lesion area in that slice; missing phases get a learned placeholder embedding instead of breaking the pipeline.
-6. The four phases' `[masked-pooled patch feature | CLS feature]` vectors are concatenated with a clinical-feature embedding (see below) and fed to a small MLP with two heads:
+6. In parallel, that same phase's slice stack is also treated as one single-channel `(1, S, 224, 224)` volume and run through a per-phase 3D CNN (see below), giving the model 3D context DINOv2's per-slice view can't see.
+7. Per phase, `[masked-pooled patch feature | CLS feature | 3D-CNN feature map]` is concatenated; all four phases' vectors plus a clinical-feature embedding (see below) are concatenated again and fed to a small MLP with two heads:
    - a 3-way head (ordinal / LR-M / LR-TIV), which drives the **Special Category Recognition** metric,
    - a 5-way ordinal head (LR-1..LR-5), used only when the case is ordinal, which drives **Adjusted QWK**.
 
    This split mirrors exactly how `amplifai-codabench/evaluate.py` scores submissions.
 
-Only the head is trained — the DINOv2 backbone stays frozen throughout.
+Only the DINOv2 backbone is frozen — the 3D CNNs, clinical encoder, and heads are all trained.
+
+Both extra branches below are independently optional, toggled at training time with `train.py --use_cnn`/`--no-use_cnn` and `--use_clinical`/`--no-use_clinical` (both default on). The choice is saved into the checkpoint itself, so `predict.py`/`submission/run.py` always reconstruct the matching architecture automatically — no flag needs to be passed again at inference time. Checkpoints trained before this option existed load as if both had been on (their actual shape).
+
+### 3D-CNN volume branch
+
+Alongside DINOv2, each phase gets its own `PhaseVolumeCNN` (`lirads_model/model.py`) — one 3D CNN per phase, since contrast behavior differs by phase (e.g. washout only shows up on venous/delayed). It takes that phase's `(1, S, 224, 224)` slice stack (the same windowed lesion crop DINOv2 sees, but single-channel and without the patch-alignment padding — `preprocessing.prepare_phase_tensors`'s 4th return value) through a few `Conv3d`/`InstanceNorm3d`/`ReLU` layers, then an `AdaptiveAvgPool3d` that collapses depth to 1 regardless of how many slices `S` were sampled, producing a fixed `16×16` single-channel feature map (`config.CNN_FEATURE_MAP_SIZE`) that's flattened to 256-dim and concatenated onto that phase's DINOv2 feature vector. Pass `--no-use_cnn` to `train.py` to fall back to DINOv2-only.
 
 ### Clinical/tabular features
 
-`train_metadata.csv` also records the major LI-RADS imaging features a radiologist annotated per lesion: `aphe`, `washout_venous`, `washout_delayed`, `capsule_venous`, `capsule_delayed`. These are one-hot/binary-encoded into an 8-dim vector (`aphe` one-hot over `Absent`/`Non-rim APHE`/`Rim APHE`/`Unknown`, plus the four binary flags — see `dataset.encode_clinical_features`), run through a small `Linear` projection (`LiRadsNet.clinical_encoder`), and scaled by a learned weight (`clinical_scale`) before being concatenated onto the image encoding.
+`train_metadata.csv` also records the major LI-RADS imaging features a radiologist annotated per lesion: `aphe`, `washout_venous`, `washout_delayed`, `capsule_venous`, `capsule_delayed`. These are one-hot/binary-encoded into an 8-dim vector (`aphe` one-hot over `Absent`/`Non-rim APHE`/`Rim APHE`/`Unknown`, plus the four binary flags — see `dataset.encode_clinical_features`), run through a small `Linear` projection (`LiRadsNet.clinical_encoder`), and scaled by a learned weight (`clinical_scale`) before being concatenated onto the image encoding. Pass `--no-use_clinical` to `train.py` to train on images alone.
 
-The challenge's own submission input is just a `case_id` — no clinical metadata — so this branch is optional per case: when `clinical_features` isn't passed to `LiRadsNet.forward` (as in `predict.predict_case`, used by `submission/run.py`), a learned placeholder embedding (`missing_clinical_embed`) stands in, the same pattern already used for a missing CT phase. Training (`train.py`, via `LiRadsCaseDataset`) always supplies the real per-case vector.
+The challenge's own submission input is just a `case_id` — no clinical metadata — so even when this branch is enabled it's optional per case: when `clinical_features` isn't passed to `LiRadsNet.forward` (as in `predict.predict_case`, used by `submission/run.py`), a learned placeholder embedding (`missing_clinical_embed`) stands in, the same pattern already used for a missing CT phase. Training (`train.py`, via `LiRadsCaseDataset`) always supplies the real per-case vector when the branch is enabled.
 
 ## Layout
 
@@ -34,7 +41,7 @@ lirads_model/
 ├── config.py         # labels, slice cap, image/patch sizes, CT windowing, hub names
 ├── preprocessing.py  # NIfTI loading, lesion slice sampling, crop/resize/window, mask->patch-grid
 ├── backbone.py        # frozen DINOv2 wrapper (transformers.AutoModel; local/offline or hub/pretrained)
-├── model.py           # LiRadsNet: mask-guided pooling + dual head, decode_prediction()
+├── model.py           # LiRadsNet: mask-guided DINOv2 pooling + per-phase 3D-CNN + dual head, decode_prediction()
 ├── dataset.py          # PyTorch Dataset over a metadata CSV (optionally filtered to a case_id list) + case folders
 ├── splits.py            # builds N stratified train/val/test folds over a metadata CSV, saved as JSON
 ├── train.py            # training loop for one fold, validates each epoch with the real challenge metric, tests on the held-out fold at the end
@@ -116,7 +123,7 @@ python -m lirads_model.train \
 ```
 
 - Downloads the pretrained backbone from the HuggingFace Hub on first run (needs internet).
-- Only head parameters (+ the missing-phase embedding) are optimized; the backbone is always kept in eval mode.
+- Everything except the DINOv2 backbone is optimized (head, 3D-CNN branch, clinical branch, missing-phase embedding); the backbone is always kept in eval mode. Add `--no-use_cnn` and/or `--no-use_clinical` to drop those branches (see "Approach" above).
 - Category/ordinal losses are class-weighted by inverse frequency in the fold's `train` split.
 - After each epoch, predictions on the fold's `val` split are scored with the actual `amplifai-codabench/evaluate.py` metric (QWK + SCR composite); the checkpoint is overwritten whenever `final_score` improves.
 - The saved checkpoint (`model_state_dict`) contains the full model including backbone weights, so it's self-contained — no separate weights-export step needed.
@@ -143,16 +150,20 @@ python -m lirads_model.predict \
 
 `--score` additionally prints the challenge metric against ground truth and saves a confusion matrix image plus a per-class precision/recall/F1/support CSV next to the predictions CSV (filenames always tagged with the fold, e.g. `..._fold0_confusion_matrix.png` / `..._fold0_per_class_metrics.csv`); omit it to just dump predictions. Defaults to `--backbone_source local` (the vendored offline snapshot); pass `--backbone_source hub` if you haven't vendored it yet.
 
+`--checkpoint` accepts more than one path (`--checkpoint ckpt_a.pt ckpt_b.pt ckpt_c.pt`); with more than one, each model's decoded prediction is majority-voted per case (ties broken by whichever tied label the earliest-listed model predicted).
+
 ## 6. Build the submission zip
 
 ```bash
-cp checkpoints/lirads_model.pt submission/model/lirads_model.pt   # mkdir -p submission/model first
+cp checkpoints/lirads_model_fold0.pt submission/model/   # mkdir -p submission/model first
 cd submission
 ./build.sh
 zip -r submission.zip run.py metadata lirads_model/ model/ packages/
 ```
 
-`build.sh` copies the top-level `lirads_model/` package (including the vendored DINOv2 snapshot) into `submission/` and bundles `nibabel` and `transformers` (+ their light deps) into `packages/`, warning if the vendored snapshot or the checkpoint are missing.
+`build.sh` copies the top-level `lirads_model/` package (including the vendored DINOv2 snapshot) into `submission/` and bundles `nibabel` and `transformers` (+ their light deps) into `packages/`, warning if the vendored snapshot or checkpoints are missing.
+
+`model/` can hold more than one checkpoint (e.g. `lirads_model_fold0.pt`, `lirads_model_fold1.pt`, ...) — `run.py` globs everything in `model/*.pt`, loads them all, and majority-votes their predictions per case. With a single checkpoint it behaves exactly as before.
 
 ## 7. Test offline before uploading
 

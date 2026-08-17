@@ -84,7 +84,7 @@ def train(args: argparse.Namespace) -> None:
     print_to_log(f"Datasets loaded.")
 
     backbone = Dinov2SliceEncoder.from_pretrained()
-    model = LiRadsNet(backbone).to(device)
+    model = LiRadsNet(backbone, use_cnn=args.use_cnn, use_clinical=args.use_clinical).to(device)
 
     cat_idxs, ord_idxs = zip(*(label_to_targets(str(l)) for l in train_ds.df["lirads_score"]))
     cat_counts = {i: cat_idxs.count(i) for i in range(len(config.CAT_NAMES))}
@@ -147,7 +147,10 @@ def train(args: argparse.Namespace) -> None:
 
         if result["final_score"] > best_score:
             best_score = result["final_score"]
-            torch.save({"model_state_dict": model.state_dict()}, args.out)
+            torch.save(
+                {"model_state_dict": model.state_dict(), "use_cnn": args.use_cnn, "use_clinical": args.use_clinical},
+                args.out,
+            )
             print_to_log(f"  saved new best checkpoint to {args.out} (score={best_score:.4f})")
 
     print_to_log(f"Training complete. best val final_score={best_score:.4f}")
@@ -205,6 +208,14 @@ def main() -> None:
     parser.add_argument("--splits_json", required=True, help="output of `python -m lirads_model.splits`")
     parser.add_argument("--fold", type=int, default=0, help="fold index into splits_json to train/test on")
     parser.add_argument("--test_predictions_out", default=None, help="where to save test-split predictions CSV")
+    parser.add_argument(
+        "--use_cnn", action=argparse.BooleanOptionalAction, default=True,
+        help="use the per-phase 3D-CNN volume branch alongside DINOv2 (--no-use_cnn for DINOv2-only)",
+    )
+    parser.add_argument(
+        "--use_clinical", action=argparse.BooleanOptionalAction, default=True,
+        help="use the clinical/tabular feature branch (aphe/washout/capsule) (--no-use_clinical for images-only)",
+    )
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_iterations_per_epoch", type=int, default=10)

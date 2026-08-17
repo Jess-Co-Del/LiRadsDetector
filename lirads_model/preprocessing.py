@@ -108,9 +108,14 @@ _IMAGENET_STD = np.array(config.IMAGENET_STD, dtype=np.float32)[:, None, None]
 
 def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.ndarray):
     """
-    Returns (pixel_values[S,3,H,W], mask_grids[S,grid,grid], slice_weights[S])
+    Returns (pixel_values[S,3,H,W], mask_grids[S,grid,grid], slice_weights[S],
+    volume[S,IMG_SIZE,IMG_SIZE]). `volume` is the same windowed-normalized
+    lesion crop as pixel_values, but single-channel and unpadded (no
+    Imagenet normalization, no patch-alignment padding, no pseudo-RGB) -- fed
+    to the per-phase 3D CNN as a genuine (1, S, H, W) volume rather than S
+    independent 2D images.
     """
-    pixel_values, mask_grids, weights = [], [], []
+    pixel_values, mask_grids, weights, volume_slices = [], [], [], []
 
     for z in z_indices:
         img2d = _get_slice(volume, int(z))
@@ -129,6 +134,8 @@ def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.nd
         # or below WINDOW_LOW" -- a well-defined background level -- rather
         # than padding in raw HU space.
         img_norm = _window_normalize(img_resized).astype(np.float32)
+        volume_slices.append(img_norm)
+
         img_padded = _pad_to(img_norm, config.PADDED_SIZE, value=0.0)
         mask_padded = _pad_to(mask_resized, config.PADDED_SIZE, value=0.0)
 
@@ -145,13 +152,14 @@ def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.nd
     pixel_values_t = torch.from_numpy(np.stack(pixel_values)).float()
     mask_grids_t = torch.from_numpy(np.stack(mask_grids)).float()
     weights_t = torch.tensor(weights, dtype=torch.float32)
-    return pixel_values_t, mask_grids_t, weights_t
+    volume_t = torch.from_numpy(np.stack(volume_slices)).float()
+    return pixel_values_t, mask_grids_t, weights_t, volume_t
 
 
 def build_case_tensors(phase_paths: dict, mask_path: str, max_slices: int = config.MAX_SLICES_PER_CASE) -> dict:
     """phase_paths: {"ART": path_or_None, "VEN": ..., "DEL": ..., "DRY": ...}.
 
-    Returns {phase_name: (pixel_values, mask_grids, slice_weights) or None}.
+    Returns {phase_name: (pixel_values, mask_grids, slice_weights, volume) or None}.
     """
     try:
         mask_vol = load_volume(mask_path) > 0.5
