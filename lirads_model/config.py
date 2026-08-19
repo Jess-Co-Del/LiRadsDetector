@@ -138,3 +138,30 @@ AUGMENT_INTENSITY_SCALE_RANGE = (0.9, 1.1)   # multiplicative HU jitter range
 # original behavior).
 TTA_VIEWS = 4
 AUGMENT_INTENSITY_PROB = 0.5
+
+# ── Lesion transplantation (training only) ───────────────────────────────────
+# LR-1/LR-2/LR-3 have very few real cases (see train_metadata.csv). Rather than
+# train on the same handful of static examples every epoch, lesion_transplant.py
+# extracts a donor case's real, correctly-labeled lesion (all phases, full 3D
+# patch) and pastes it into a different recipient case's liver at a random
+# plausible location, alpha-feathering the seam. This multiplies background
+# diversity (surrounding parenchyma, vasculature, noise) per rare lesion while
+# keeping the lesion's own true appearance -- the synthetic case is labeled
+# with the donor's real label, never the recipient's.
+#
+# Placement is constrained to the recipient's own liver, segmented by a
+# pretrained nnUNetv2 model (see scripts/segment_livers.py) rather than
+# approximated -- the segmenter's output is expected at
+# <case_dir>/annotations/liver.nii.gz (find_case_liver_path()), the same
+# per-case layout as the existing lesion mask.
+TRANSPLANT_DONOR_LABELS = ["LR-1", "LR-2", "LR-3"]
+TRANSPLANT_PROB = 0.5              # per __getitem__ call on an eligible donor case
+TRANSPLANT_MARGIN_FRAC = 0.15      # patch margin around the lesion bbox, each side
+TRANSPLANT_FEATHER_VOX = 4         # gaussian-blur radius (voxels) for the paste alpha
+TRANSPLANT_LIVER_ERODE_MARGIN_VOX = 2  # extra shrink of the recipient liver mask, beyond the patch's own half-extent, so the pasted patch doesn't touch the liver boundary
+TRANSPLANT_MAX_PLACEMENT_ATTEMPTS = 25  # random center draws tried before giving up on a recipient
+
+# Phase the liver segmenter was trained/run on (portal venous, the standard
+# phase for liver segmentation datasets like LiTS); segment_livers.py reads
+# this phase's volume per case.
+LIVER_SEGMENTATION_PHASE = "VEN"

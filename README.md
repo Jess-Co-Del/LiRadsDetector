@@ -38,6 +38,12 @@ The challenge's own submission input is just a `case_id` — no clinical metadat
 
 Random rotation, zoom, horizontal/vertical flip, and HU intensity jitter (`lirads_model/augmentation.py`) are applied to the training split only (`LiRadsCaseDataset(..., augment=True)`, wired up by default in `train.py`; `--no-augment` disables it). Each transform is independently enabled with its own probability (see the `AUGMENT_*` constants in `config.py`), and one set of parameters is sampled per case and reused identically for every slice of every phase — so the 3D-CNN branch still sees a spatially coherent volume, the phases stay mutually aligned, and the lesion mask is transformed in lockstep with the image so mask-guided pooling stays correct. Validation/test splits and inference (`predict.py`, `submission/run.py`) never augment.
 
+### Lesion transplantation
+
+`LR-1`/`LR-2`/`LR-3` have very few real cases in `train_metadata.csv`. `lirads_model/lesion_transplant.py` (`train.py --transplant`, off by default) extracts a donor case's real, correctly-labeled lesion — the full 3D patch, across every CT phase, so its true multi-phase enhancement pattern is preserved — and pastes it into a different recipient case's liver at a random plausible location, blending the seam with a distance-transform alpha feather (exact donor signal deep inside the lesion, smooth taper to the recipient's own tissue at the boundary — not a global blur, which would wash out lesions smaller than the feather radius). The synthesized case keeps the donor's real label; only the surrounding parenchyma, vasculature, and noise texture vary each time it's drawn, multiplying background diversity per rare lesion instance without inventing a fake one.
+
+Placement is constrained to the recipient's own liver rather than approximated, using a liver segmentation mask produced ahead of time by a pretrained nnUNetv2 model — run `scripts/segment_livers.py` once (offline, wherever the model + case data live) before training with `--transplant`; it saves one `<case_dir>/annotations/liver.nii.gz` per case, the same per-case layout as the lesion mask. Recipients are always drawn from `config.NO_LESION_LABEL` cases when available (real liver background, no competing real lesion to accidentally leave unlabeled in the synthesized mask), and a case without a liver mask on disk simply isn't used as a recipient — `--transplant` degrades gracefully to no-op if `segment_livers.py` hasn't been run yet, rather than failing.
+
 ## Layout
 
 ```
@@ -45,6 +51,7 @@ lirads_model/
 ├── config.py         # labels, slice cap, image/patch sizes, CT windowing, hub names
 ├── preprocessing.py  # NIfTI loading, lesion slice sampling, crop/resize/window, mask->patch-grid
 ├── augmentation.py    # train-only rotation/zoom/flip/intensity augmentation, shared across a case's phases
+├── lesion_transplant.py # train-only lesion copy-paste augmentation for rare ordinal classes (needs scripts/segment_livers.py output)
 ├── backbone.py        # frozen DINOv2 wrapper (transformers.AutoModel; local/offline or hub/pretrained)
 ├── model.py           # LiRadsNet: mask-guided DINOv2 pooling + per-phase 3D-CNN + dual head, decode_prediction()
 ├── dataset.py          # PyTorch Dataset over a metadata CSV (optionally filtered to a case_id list) + case folders
@@ -54,7 +61,9 @@ lirads_model/
 └── vendor/dinov2-with-registers-large/ # populated by scripts/vendor_dinov2.sh, not checked in
 
 scripts/
-└── vendor_dinov2.sh    # one-time: downloads a local HF Hub snapshot for offline backbone reconstruction
+├── vendor_dinov2.sh    # one-time: downloads a local HF Hub snapshot for offline backbone reconstruction
+├── segment_livers.py   # one-time (per dataset): runs a pretrained nnUNetv2 model to produce per-case liver.nii.gz, needed by --transplant
+└── diagnose_zextent_crop.py # diagnostic: measures how much of a lesion mask lesion_slice_indices's fixed-size window trims, by class
 
 submission/
 ├── run.py              # challenge entry point (SUBMISSION_GUIDE.md contract)
@@ -114,6 +123,20 @@ python -m lirads_model.splits \
 
 Generates a genuine `n_folds`-way `StratifiedKFold` (by `lirads_score`) partition: each case's `test`-fold membership is fixed, and the `n_folds` test sets are disjoint and together cover every case exactly once (unlike independent random draws). Within each fold's non-test remainder, `train`/`val` is a further stratified random split at `--val_frac` (default 0.15). All folds are written to one JSON keyed by fold index (`{"0": {"train": [...], "val": [...], "test": [...]}, "1": {...}, ...}`) — pick one fold index at training time via `--fold`.
 
+## 4b. (optional) Segment livers, for lesion transplantation
+
+Only needed if you plan to train with `--transplant` (see "Lesion transplantation" above):
+
+```bash
+python -m scripts.segment_livers \
+  --metadata_csv ./data/metadata.csv \
+  --data_root ./data/cases \
+  --model_dir /path/to/nnUNet_results/Dataset003_Liver/nnUNetTrainer__nnUNetPlans__2d \
+  --folds 0 1 2 3 4
+```
+
+Runs a pretrained nnUNetv2 model over every case's `VEN`-phase volume (`--phase` to change), saving `<case_dir>/annotations/liver.nii.gz`. `--model_dir` is an `nnUNet_results/<Dataset>/<Trainer>__<Plans>__<configuration>` folder from an nnUNetv2 training run; needs the `nnunetv2` package (not one of this repo's own dependencies — install separately). Cases that already have a `liver.nii.gz` are skipped unless `--overwrite` is passed.
+
 ## 5. Train
 
 ```bash
@@ -133,6 +156,7 @@ python -m lirads_model.train \
 - The train split is drawn via a `WeightedRandomSampler` (inverse-frequency over the full `lirads_score` label, not just the 4-way category) rather than plain random shuffling, so a rare special class like LR-TIV gets oversampled to roughly the same per-epoch exposure as a more common one (e.g. LR-M) that happens to share its category bucket — loss weighting alone can't fix a class that a short, randomly-shuffled epoch never happens to draw. `--no-balanced_sampling` reverts to plain `shuffle=True`.
 - After each epoch, predictions on the fold's `val` split are scored with the actual `amplifai-codabench/evaluate.py` metric (QWK + SCR composite) plus a per-class precision/recall/F1/support breakdown, logged line by line; the checkpoint is overwritten whenever `final_score` improves.
 - `--tta_views N` (default 0, off) enables test-time augmentation for both the per-epoch `val` scoring and the final `test`-split evaluation: whenever a case's deterministic pass gates to the ordinal category, `N` more forward passes on freshly augmented views of that case (same transforms as training, see `augmentation.py`) are averaged into the LR-1..LR-5 decision, aiming to steady predictions across LR-1 through LR-5 specifically. The category gate itself is always decided from the single deterministic pass. Non-zero `N` multiplies inference cost for ordinal-gated cases by `N+1`, every epoch if enabled during training, so it's off by default; `predict.py`/`submission/run.py` use `config.TTA_VIEWS` (default 4) at actual inference time regardless of this flag.
+- `--transplant` (default off) enables lesion copy-paste augmentation for `config.TRANSPLANT_DONOR_LABELS` (LR-1/LR-2/LR-3) — see "Lesion transplantation" above. Requires `scripts/segment_livers.py` to have already produced a `liver.nii.gz` for at least some `config.NO_LESION_LABEL` cases in the train split; otherwise it's a no-op.
 - The saved checkpoint (`model_state_dict`) contains the full model including backbone weights, so it's self-contained — no separate weights-export step needed.
 - `--out`'s filename always gets `_fold{N}` inserted before the extension (e.g. `lirads_model.pt` → `lirads_model_fold0.pt`), whether left at its default or set explicitly, so checkpoints from different folds never collide.
 - Once training finishes, the best checkpoint is reloaded and scored once more on the fold's held-out `test` split (never touched during training); predictions are saved alongside the checkpoint (`--test_predictions_out` to override the path), plus a confusion matrix image (`..._foldN_confusion_matrix.png`) and a per-class precision/recall/F1/support CSV (`..._foldN_per_class_metrics.csv`) saved next to it.

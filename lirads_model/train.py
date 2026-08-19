@@ -96,6 +96,7 @@ def train(args: argparse.Namespace) -> None:
         args.max_slices,
         case_ids=fold["train"],
         augment=args.augment,
+        transplant=args.transplant,
     )
     val_ds = LiRadsCaseDataset(
         args.metadata_csv,
@@ -268,6 +269,15 @@ def main() -> None:
         help=(
             "oversample rare lirads_score classes (e.g. LR-TIV) via a WeightedRandomSampler on the train split, "
             "instead of plain random shuffling (--no-balanced_sampling to disable)"
+        ),
+    )
+    parser.add_argument(
+        "--transplant", action=argparse.BooleanOptionalAction, default=False,
+        help=(
+            "lesion copy-paste augmentation for config.TRANSPLANT_DONOR_LABELS (LR-1/LR-2/LR-3 by default): "
+            "paste a donor case's real lesion into a different recipient case's liver (see lesion_transplant.py). "
+            "Off by default -- requires scripts/segment_livers.py to have already produced a liver.nii.gz for "
+            "recipient cases; cases missing one simply aren't used as recipients."
         ),
     )
     parser.add_argument("--epochs", type=int, default=30)

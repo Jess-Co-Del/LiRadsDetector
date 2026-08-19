@@ -11,11 +11,12 @@ import glob
 import os
 from typing import Optional, Sequence
 
+import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from . import config, preprocessing
+from . import config, lesion_transplant, preprocessing
 
 
 def label_to_targets(label: str):
@@ -63,6 +64,7 @@ class LiRadsCaseDataset(Dataset):
         max_slices: int = config.MAX_SLICES_PER_CASE,
         case_ids: Optional[Sequence[str]] = None,
         augment: bool = False,
+        transplant: bool = False,
     ):
         df = pd.read_csv(metadata_csv)
         df.columns = df.columns.str.strip().str.lower()
@@ -84,9 +86,44 @@ class LiRadsCaseDataset(Dataset):
         self.data_root = data_root
         self.max_slices = max_slices
         self.augment = augment
+        self.transplant = transplant
 
     def __len__(self) -> int:
         return len(self.df)
+
+    def _build_phase_data(self, row: pd.Series, case_id: str, case_dir: str, label: str) -> dict:
+        """Normally just preprocessing.build_case_tensors() on this case's
+        own files. When self.transplant is on and `label` is one of
+        config.TRANSPLANT_DONOR_LABELS (LR-1/LR-2/LR-3 by default), with
+        probability config.TRANSPLANT_PROB this case instead becomes a
+        lesion *donor*: its real lesion is pasted into a different random
+        recipient case's liver (lesion_transplant.transplant_case()), and
+        tensors are built from that synthesized volume instead -- still
+        labeled `label`, since the transplanted lesion is the donor's real,
+        correctly-labeled one. Falls back to this case's own real data if no
+        recipient has a liver mask yet, or none has room for this lesion.
+        """
+        if self.transplant and label in config.TRANSPLANT_DONOR_LABELS:
+            rng = np.random.default_rng()
+            if rng.random() < config.TRANSPLANT_PROB:
+                recipient_case_id = lesion_transplant.find_recipient_case_id(self.df, case_id, rng)
+                if recipient_case_id is not None:
+                    try:
+                        recipient_dir = _find_case_dir(self.data_root, recipient_case_id)
+                        phase_vols, mask_vol = lesion_transplant.transplant_case(
+                            case_dir, case_id, recipient_dir, recipient_case_id, rng,
+                        )
+                        return preprocessing.build_case_tensors_from_volumes(
+                            phase_vols, mask_vol, self.max_slices, augment=self.augment, rng=rng,
+                        )
+                    except (FileNotFoundError, ValueError):
+                        pass  # no liver mask yet, or no room for this lesion -- fall back below
+
+        phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
+        mask_path = preprocessing.find_case_mask_path(case_dir)
+        return preprocessing.build_case_tensors(
+            phase_paths, mask_path, self.max_slices, augment=self.augment, label=label,
+        )
 
     def __getitem__(self, idx: int) -> dict:
         row = self.df.iloc[idx]
@@ -94,11 +131,7 @@ class LiRadsCaseDataset(Dataset):
         case_dir = _find_case_dir(self.data_root, case_id)
 
         label = str(row["lirads_score"]).strip()
-        phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
-        mask_path = preprocessing.find_case_mask_path(case_dir)
-        phase_data = preprocessing.build_case_tensors(
-            phase_paths, mask_path, self.max_slices, augment=self.augment, label=label,
-        )
+        phase_data = self._build_phase_data(row, case_id, case_dir, label)
 
         cat_idx, ord_idx = label_to_targets(label)
         clinical_features = encode_clinical_features(row)
