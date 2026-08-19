@@ -238,7 +238,8 @@ def build_case_tensors_from_volumes(
     augment: bool = False,
     rng: Optional[np.random.Generator] = None,
 ) -> dict:
-    """The tensor-prep half of build_case_tensors(): z-index selection +
+    """
+    The tensor-prep half of build_case_tensors(): z-index selection +
     per-phase crop/resize/window/augment, given already-loaded (and, for a
     transplanted case, already-spliced) raw volumes. See build_case_tensors()
     for `augment`/`rng`.
@@ -264,7 +265,8 @@ def build_case_tensors(
     rng: Optional[np.random.Generator] = None,
     label: Optional[str] = None,
 ) -> dict:
-    """phase_paths: {"ART": path_or_None, "VEN": ..., "DEL": ..., "DRY": ...}.
+    """
+    phase_paths: {"ART": path_or_None, "VEN": ..., "DEL": ..., "DRY": ...}.
 
     Returns {phase_name: (pixel_values, mask_grids, slice_weights, volume) or None}.
 

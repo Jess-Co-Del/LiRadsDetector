@@ -251,7 +251,7 @@ def main() -> None:
     parser.add_argument("--metadata_csv", required=True, help="CSV with case_id + lirads_score for the whole dataset")
     parser.add_argument("--splits_json", required=True, help="output of `python -m lirads_model.splits`")
     parser.add_argument("--fold", type=int, default=0, help="fold index into splits_json to train/test on")
-    parser.add_argument("--test_predictions_out", default=None, help="where to save test-split predictions CSV")
+    parser.add_argument("--test_predictions_out", default="checkpoints/test_pred.csv", help="where to save test-split predictions CSV")
     parser.add_argument(
         "--use_cnn", action=argparse.BooleanOptionalAction, default=True,
         help="use the per-phase 3D-CNN volume branch alongside DINOv2 (--no-use_cnn for DINOv2-only)",

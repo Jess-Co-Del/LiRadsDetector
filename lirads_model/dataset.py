@@ -27,11 +27,11 @@ def label_to_targets(label: str):
     if label in config.ORDINAL_LABELS:
         return 0, config.ORDINAL_LABELS.index(label)
     if label == "LR-M":
-        return 1, -1
+        return 1, 0
     if label == "LR-TIV":
-        return 2, -1
+        return 2, 0
     if label == config.NO_LESION_LABEL:
-        return 3, -1
+        return 3, 0
     raise ValueError(f"unrecognized LI-RADS label: {label!r}")
 
 
