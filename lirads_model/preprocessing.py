@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from scipy.ndimage import zoom
 
-from . import config
+from . import augmentation, config
 
 
 def load_volume(path: str) -> np.ndarray:
@@ -26,7 +26,12 @@ def _resample_to_shape(vol: np.ndarray, target_shape: tuple) -> np.ndarray:
 
 def lesion_slice_indices(mask: np.ndarray, max_slices: int = config.MAX_SLICES_PER_CASE) -> np.ndarray:
     """
-    Evenly spread up to `max_slices` z-indices across the lesion's z-extent.
+    Returns exactly `max_slices` contiguous z-indices centered on the
+    lesion's z-extent (fewer only if the volume itself is shorter than
+    max_slices along the slice axis). A lesion spanning more slices than
+    max_slices is trimmed symmetrically from both ends, keeping the center;
+    a lesion spanning fewer is padded symmetrically with neighboring
+    non-lesion slices on both ends, clamped to the volume's bounds.
     """
     other_axes = tuple(a for a in range(mask.ndim) if a != config.SLICE_AXIS)
     z_with_lesion = np.where(mask.sum(axis=other_axes) > 0)[0]
@@ -35,14 +40,32 @@ def lesion_slice_indices(mask: np.ndarray, max_slices: int = config.MAX_SLICES_P
         #raise ValueError("lesion mask contains no positive voxels")
 
     z_min, z_max = int(z_with_lesion.min()), int(z_with_lesion.max())
-    full_range = np.arange(z_min, z_max + 1)
+    n = z_max - z_min + 1
 
-    if len(full_range) <= max_slices:
-        return full_range
+    if n > max_slices:
+        excess = n - max_slices
+        trim_start = excess // 2
+        trim_end = excess - trim_start
+        z_min += trim_start
+        z_max -= trim_end
+    elif n < max_slices:
+        deficit = max_slices - n
+        add_start = deficit // 2
+        add_end = deficit - add_start
+        z_min -= add_start
+        z_max += add_end
 
-    picks = np.linspace(0, len(full_range) - 1, max_slices)
-    picks = np.unique(np.round(picks).astype(int))
-    return full_range[picks]
+        z_size = mask.shape[config.SLICE_AXIS]
+        if z_min < 0:
+            z_max += -z_min
+            z_min = 0
+        if z_max > z_size - 1:
+            z_min -= z_max - (z_size - 1)
+            z_max = z_size - 1
+        z_min = max(z_min, 0)
+        z_max = min(z_max, z_size - 1)
+
+    return np.arange(z_min, z_max + 1)
 
 
 def _get_slice(volume: np.ndarray, z: int) -> np.ndarray:
@@ -106,7 +129,12 @@ _IMAGENET_MEAN = np.array(config.IMAGENET_MEAN, dtype=np.float32)[:, None, None]
 _IMAGENET_STD = np.array(config.IMAGENET_STD, dtype=np.float32)[:, None, None]
 
 
-def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.ndarray):
+def prepare_phase_tensors(
+    volume: np.ndarray,
+    mask: np.ndarray,
+    z_indices: np.ndarray,
+    augment_params: Optional[dict] = None,
+):
     """
     Returns (pixel_values[S,3,H,W], mask_grids[S,grid,grid], slice_weights[S],
     volume[S,IMG_SIZE,IMG_SIZE]). `volume` is the same windowed-normalized
@@ -114,6 +142,11 @@ def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.nd
     Imagenet normalization, no patch-alignment padding, no pseudo-RGB) -- fed
     to the per-phase 3D CNN as a genuine (1, S, H, W) volume rather than S
     independent 2D images.
+
+    `augment_params` (from augmentation.sample_augment_params, or None to
+    disable) is applied identically to every slice, so it should be sampled
+    once per case and passed to every phase's call -- see
+    build_case_tensors's `augment` argument.
     """
     pixel_values, mask_grids, weights, volume_slices = [], [], [], []
 
@@ -129,6 +162,16 @@ def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.nd
         img_resized = _resize2d(img_crop, config.IMG_SIZE, order=1)
         mask_resized = _resize2d(mask_crop, config.IMG_SIZE, order=1)
         mask_resized = np.clip(mask_resized, 0.0, 1.0)
+
+        if augment_params is not None:
+            # Same geometric transform for image and mask so they stay
+            # pixel-aligned; fill value is WINDOW_LOW for the image (maps to
+            # 0.0 post-windowing, the same "background" level used for
+            # padding below) and 0.0 (no lesion) for the mask.
+            img_resized = augmentation.apply_geometric(img_resized, augment_params, order=1, cval=config.WINDOW_LOW)
+            mask_resized = augmentation.apply_geometric(mask_resized, augment_params, order=1, cval=0.0)
+            mask_resized = np.clip(mask_resized, 0.0, 1.0)
+            img_resized = augmentation.apply_intensity(img_resized, augment_params)
 
         # Windowed-normalize before padding so the pad value (0.0) means "at
         # or below WINDOW_LOW" -- a well-defined background level -- rather
@@ -156,16 +199,43 @@ def prepare_phase_tensors(volume: np.ndarray, mask: np.ndarray, z_indices: np.nd
     return pixel_values_t, mask_grids_t, weights_t, volume_t
 
 
-def build_case_tensors(phase_paths: dict, mask_path: str, max_slices: int = config.MAX_SLICES_PER_CASE) -> dict:
+def build_case_tensors(
+    phase_paths: dict,
+    mask_path: str,
+    max_slices: int = config.MAX_SLICES_PER_CASE,
+    augment: bool = False,
+    rng: Optional[np.random.Generator] = None,
+    label: Optional[str] = None,
+) -> dict:
     """phase_paths: {"ART": path_or_None, "VEN": ..., "DEL": ..., "DRY": ...}.
 
     Returns {phase_name: (pixel_values, mask_grids, slice_weights, volume) or None}.
+
+    `augment`: when True, one set of random rotation/zoom/flip/intensity
+    parameters is sampled (via `rng`, or a fresh `np.random.default_rng()`
+    if not given) and applied identically to every phase -- training only;
+    leave False for val/test/inference.
+
+    `label`: the case's ground-truth lirads_score, when known (training,
+    via LiRadsCaseDataset). Cases labeled config.NO_LESION_LABEL have no
+    mask file by design -- there's no target lesion to segment -- so an
+    all-zero mask is used directly rather than attempting to load one. For
+    every other label (including when label is unknown, e.g. at inference
+    in predict.py/submission/run.py, where a mask is always provided per the
+    challenge's task spec), the mask is loaded normally and any failure
+    propagates: a missing/corrupt mask on a real lesion case is a data bug,
+    not something to silently paper over as an empty mask.
     """
-    try:
+    if label == config.NO_LESION_LABEL:
+        mask_vol = np.zeros((512, 512, 200), dtype=bool)
+    else:
         mask_vol = load_volume(mask_path) > 0.5
-    except:
-        mask_vol = np.zeros((512,512, 200))
     z_indices = lesion_slice_indices(mask_vol, max_slices)
+
+    augment_params = None
+    if augment:
+        rng = rng if rng is not None else np.random.default_rng()
+        augment_params = augmentation.sample_augment_params(rng)
 
     out = {}
     for phase in config.PHASE_NAMES:
@@ -178,7 +248,7 @@ def build_case_tensors(phase_paths: dict, mask_path: str, max_slices: int = conf
             arterial_shape = vol.shape
         mask_vol = _resample_to_shape(mask_vol, arterial_shape)
         vol = _resample_to_shape(vol, arterial_shape)
-        out[phase] = prepare_phase_tensors(vol, mask_vol, z_indices)
+        out[phase] = prepare_phase_tensors(vol, mask_vol, z_indices, augment_params=augment_params)
     return out
 
 

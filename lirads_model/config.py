@@ -6,11 +6,29 @@ import math
 import os
 
 # ── Labels ───────────────────────────────────────────────────────────────────
-ORDINAL_LABELS = ["LR-1", "LR-2", "LR-3", "LR-4", "LR-5", "LR-M", "LR-TIV", "No lesion"]
-SPECIAL_LABELS = ["LR-M", "LR-TIV"]
+ORDINAL_LABELS = ["LR-1", "LR-2", "LR-3", "LR-4", "LR-5"]
+SPECIAL_LABELS = ["LR-M", "LR-TIV", "No lesion"]
 VALID_LABELS = ORDINAL_LABELS + SPECIAL_LABELS
 
-# 3-way super-category head: ordinal vs. the two special classes.
+# "No lesion" cases have no mask file by design (there's no target lesion to
+# segment) -- preprocessing.build_case_tensors uses this to decide when an
+# all-zero mask is expected rather than a load failure.
+NO_LESION_LABEL = "No lesion"
+
+# The real challenge never scores NO_LESION_LABEL (see CAT_NAMES below), so a
+# final submission must never emit it literally. predict.predict_case /
+# predict_case_ensemble (used by submission/run.py) remap it to this instead.
+# Training and internal fold evaluation (predict.run_inference) never apply
+# this remap, so "No lesion" predictions stay visible there for diagnostics.
+NO_LESION_SUBMIT_LABEL = "LR-1"
+
+# 4-way super-category head: ordinal vs. the three special classes. Note
+# "No lesion" isn't a label the actual AMPLIFAI challenge ever scores (its
+# own evaluate.py only recognizes LR-1..LR-5/LR-M/LR-TIV) -- it's trained
+# here purely so the model learns to recognize "no real target lesion"
+# imagery as its own category instead of that signal corrupting the ordinal
+# head (see preprocessing.build_case_tensors's `label` argument). A
+# submission pipeline must never emit "No lesion" as a final prediction.
 CAT_NAMES = ["ordinal", "LR-M", "LR-TIV", "No lesion"]
 
 # Used by run.py if a case fails preprocessing/inference entirely.
@@ -27,7 +45,7 @@ SLICE_AXIS = 2
 # ── Slice sampling ───────────────────────────────────────────────────────────
 # Cap on how many axial slices (evenly spread across the lesion's z-extent)
 # are fed through the backbone per case, per phase.
-MAX_SLICES_PER_CASE = 8
+MAX_SLICES_PER_CASE = 16
 
 # ── CT windowing ─────────────────────────────────────────────────────────────
 # Generic abdominal soft-tissue window (HU), applied identically to all four
@@ -91,4 +109,20 @@ CLINICAL_EMBED_DIM = 64
 # CNN_FEATURE_MAP_SIZE x CNN_FEATURE_MAP_SIZE feature map per phase, flattened
 # and concatenated onto that phase's DINOv2 feature vector.
 CNN_FEATURE_MAP_SIZE = 16
-CNN_HIDDEN_CHANNELS = 32
+CNN_HIDDEN_CHANNELS = 256
+
+# ── Data augmentation (training only) ────────────────────────────────────────
+# One set of parameters is sampled per case and reused identically for every
+# slice of every phase (see augmentation.py), so the 3D-CNN volume branch
+# still sees a spatially coherent volume and phases stay mutually aligned.
+# Each transform is independently applied with its own probability; a
+# disabled transform is a no-op (rotate 0deg / zoom 1.0 / no flip / no
+# intensity jitter).
+AUGMENT_ROTATION_DEG = 15.0                  # max +/- rotation
+AUGMENT_ROTATION_PROB = 0.5
+AUGMENT_ZOOM_RANGE = (0.85, 1.15)            # scale factor range
+AUGMENT_ZOOM_PROB = 0.5
+AUGMENT_FLIP_PROB = 0.5                      # independent prob. for horizontal and vertical flip
+AUGMENT_INTENSITY_SHIFT_HU = 15.0            # max +/- additive HU shift (image only, never the mask)
+AUGMENT_INTENSITY_SCALE_RANGE = (0.9, 1.1)   # multiplicative HU jitter range
+AUGMENT_INTENSITY_PROB = 0.5

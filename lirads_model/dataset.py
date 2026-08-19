@@ -19,7 +19,9 @@ from . import config, preprocessing
 
 
 def label_to_targets(label: str):
-    """Returns (cat_idx, ord_idx). ord_idx is -1 when the label isn't ordinal."""
+    """Returns (cat_idx, ord_idx). ord_idx is -1 when the label isn't ordinal.
+    cat_idx follows config.CAT_NAMES's order: ordinal=0, LR-M=1, LR-TIV=2,
+    No lesion=3."""
     label = label.strip()
     if label in config.ORDINAL_LABELS:
         return 0, config.ORDINAL_LABELS.index(label)
@@ -27,8 +29,9 @@ def label_to_targets(label: str):
         return 1, -1
     if label == "LR-TIV":
         return 2, -1
-    else:
-        raise ValueError(f"unrecognized LI-RADS label: {label!r}")
+    if label == config.NO_LESION_LABEL:
+        return 3, -1
+    raise ValueError(f"unrecognized LI-RADS label: {label!r}")
 
 
 def encode_clinical_features(row: pd.Series) -> torch.Tensor:
@@ -59,6 +62,7 @@ class LiRadsCaseDataset(Dataset):
         data_root: str,
         max_slices: int = config.MAX_SLICES_PER_CASE,
         case_ids: Optional[Sequence[str]] = None,
+        augment: bool = False,
     ):
         df = pd.read_csv(metadata_csv)
         df.columns = df.columns.str.strip().str.lower()
@@ -79,6 +83,7 @@ class LiRadsCaseDataset(Dataset):
         self.df = df.reset_index(drop=True)
         self.data_root = data_root
         self.max_slices = max_slices
+        self.augment = augment
 
     def __len__(self) -> int:
         return len(self.df)
@@ -88,11 +93,14 @@ class LiRadsCaseDataset(Dataset):
         case_id = str(row["case_id"])
         case_dir = _find_case_dir(self.data_root, case_id)
 
+        label = str(row["lirads_score"]).strip()
         phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
         mask_path = preprocessing.find_case_mask_path(case_dir)
-        phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, self.max_slices)
+        phase_data = preprocessing.build_case_tensors(
+            phase_paths, mask_path, self.max_slices, augment=self.augment, label=label,
+        )
 
-        cat_idx, ord_idx = label_to_targets(str(row["lirads_score"]))
+        cat_idx, ord_idx = label_to_targets(label)
         clinical_features = encode_clinical_features(row)
         return {
             "case_id": case_id, "phase_data": phase_data, "cat_idx": cat_idx, "ord_idx": ord_idx,

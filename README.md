@@ -34,12 +34,17 @@ Alongside DINOv2, each phase gets its own `PhaseVolumeCNN` (`lirads_model/model.
 
 The challenge's own submission input is just a `case_id` — no clinical metadata — so even when this branch is enabled it's optional per case: when `clinical_features` isn't passed to `LiRadsNet.forward` (as in `predict.predict_case`, used by `submission/run.py`), a learned placeholder embedding (`missing_clinical_embed`) stands in, the same pattern already used for a missing CT phase. Training (`train.py`, via `LiRadsCaseDataset`) always supplies the real per-case vector when the branch is enabled.
 
+### Data augmentation
+
+Random rotation, zoom, horizontal/vertical flip, and HU intensity jitter (`lirads_model/augmentation.py`) are applied to the training split only (`LiRadsCaseDataset(..., augment=True)`, wired up by default in `train.py`; `--no-augment` disables it). Each transform is independently enabled with its own probability (see the `AUGMENT_*` constants in `config.py`), and one set of parameters is sampled per case and reused identically for every slice of every phase — so the 3D-CNN branch still sees a spatially coherent volume, the phases stay mutually aligned, and the lesion mask is transformed in lockstep with the image so mask-guided pooling stays correct. Validation/test splits and inference (`predict.py`, `submission/run.py`) never augment.
+
 ## Layout
 
 ```
 lirads_model/
 ├── config.py         # labels, slice cap, image/patch sizes, CT windowing, hub names
 ├── preprocessing.py  # NIfTI loading, lesion slice sampling, crop/resize/window, mask->patch-grid
+├── augmentation.py    # train-only rotation/zoom/flip/intensity augmentation, shared across a case's phases
 ├── backbone.py        # frozen DINOv2 wrapper (transformers.AutoModel; local/offline or hub/pretrained)
 ├── model.py           # LiRadsNet: mask-guided DINOv2 pooling + per-phase 3D-CNN + dual head, decode_prediction()
 ├── dataset.py          # PyTorch Dataset over a metadata CSV (optionally filtered to a case_id list) + case folders
@@ -107,7 +112,7 @@ python -m lirads_model.splits \
   --out ./data/splits.json
 ```
 
-Generates `n_folds` independent stratified-by-`lirads_score` random splits at 70/15/15 train/val/test (fractions configurable via `--train_frac`/`--val_frac`/`--test_frac`), and writes them all to one JSON keyed by fold index (`{"0": {"train": [...], "val": [...], "test": [...]}, "1": {...}, ...}`). Folds are independent draws, not a non-overlapping k-fold partition, so a case's test-set membership can repeat or vary across folds — pick one fold index at training time via `--fold`.
+Generates a genuine `n_folds`-way `StratifiedKFold` (by `lirads_score`) partition: each case's `test`-fold membership is fixed, and the `n_folds` test sets are disjoint and together cover every case exactly once (unlike independent random draws). Within each fold's non-test remainder, `train`/`val` is a further stratified random split at `--val_frac` (default 0.15). All folds are written to one JSON keyed by fold index (`{"0": {"train": [...], "val": [...], "test": [...]}, "1": {...}, ...}`) — pick one fold index at training time via `--fold`.
 
 ## 5. Train
 

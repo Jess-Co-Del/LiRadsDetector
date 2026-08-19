@@ -67,8 +67,19 @@ def train(args: argparse.Namespace) -> None:
 
     fold = load_fold(args.splits_json, args.fold)
 
-    train_ds = LiRadsCaseDataset(args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["train"])
-    val_ds = LiRadsCaseDataset(args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["val"])
+    train_ds = LiRadsCaseDataset(
+        args.metadata_csv,
+        args.data_root,
+        args.max_slices,
+        case_ids=fold["train"],
+        augment=args.augment,
+    )
+    val_ds = LiRadsCaseDataset(
+        args.metadata_csv,
+        args.data_root,
+        args.max_slices,
+        case_ids=fold["val"]
+    )
 
     train_loader = InfiniteDataLoader(
         DataLoader(
@@ -215,6 +226,10 @@ def main() -> None:
     parser.add_argument(
         "--use_clinical", action=argparse.BooleanOptionalAction, default=True,
         help="use the clinical/tabular feature branch (aphe/washout/capsule) (--no-use_clinical for images-only)",
+    )
+    parser.add_argument(
+        "--augment", action=argparse.BooleanOptionalAction, default=True,
+        help="apply random rotation/zoom/flip/intensity augmentation to the train split (--no-augment to disable)",
     )
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)

@@ -175,7 +175,9 @@ class LiRadsNet(nn.Module):
 
 
 def decode_prediction(logits_cat: torch.Tensor, logits_ord: torch.Tensor) -> str:
-    """logits_cat: (3,), logits_ord: (5,) -> a VALID_LABELS string."""
+    """logits_cat: (4,), logits_ord: (5,) -> one of config.VALID_LABELS or
+    config.NO_LESION_LABEL (the latter must be remapped before it's ever
+    submitted to the actual challenge, which doesn't score it)."""
     cat_idx = int(torch.argmax(logits_cat).item())
     cat_name = config.CAT_NAMES[cat_idx]
     if cat_name == "ordinal":

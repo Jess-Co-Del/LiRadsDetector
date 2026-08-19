@@ -74,6 +74,13 @@ def _preprocess_case(case_dir: str, case_id: str, max_slices: int):
     return preprocessing.build_case_tensors(phase_paths, mask_path, max_slices)
 
 
+def _remap_for_submission(label: str) -> str:
+    """The real challenge never scores config.NO_LESION_LABEL -- any final
+    submission prediction must remap it to a valid label instead of emitting
+    it literally. See config.NO_LESION_SUBMIT_LABEL."""
+    return config.NO_LESION_SUBMIT_LABEL if label == config.NO_LESION_LABEL else label
+
+
 @torch.no_grad()
 def predict_case(
     model: LiRadsNet,
@@ -84,7 +91,8 @@ def predict_case(
 ) -> str:
     phase_data = _preprocess_case(case_dir, case_id, max_slices)
     logits_cat, logits_ord = model([phase_data])
-    return decode_prediction(logits_cat[0].cpu(), logits_ord[0].cpu())
+    label = decode_prediction(logits_cat[0].cpu(), logits_ord[0].cpu())
+    return _remap_for_submission(label)
 
 
 @torch.no_grad()
@@ -103,7 +111,7 @@ def predict_case_ensemble(
     for model in models:
         logits_cat, logits_ord = model([phase_data])
         labels.append(decode_prediction(logits_cat[0].cpu(), logits_ord[0].cpu()))
-    return majority_vote(labels)
+    return _remap_for_submission(majority_vote(labels))
 
 
 @torch.no_grad()
