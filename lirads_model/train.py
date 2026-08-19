@@ -8,6 +8,7 @@ import sys
 import tempfile
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -40,6 +41,14 @@ def compute_class_weights(counts: dict, num_classes: int) -> torch.Tensor:
     freqs = np.clip(freqs, 1, None)  # avoid div-by-zero for unseen classes
     weights = freqs.sum() / (num_classes * freqs)
     return torch.tensor(weights, dtype=torch.float32)
+
+
+def log_per_class_metrics(metrics_df: pd.DataFrame) -> None:
+    for _, row in metrics_df.iterrows():
+        print_to_log(
+            f"    {row['label']:<10} precision={row['precision']:.3f} recall={row['recall']:.3f} "
+            f"f1={row['f1']:.3f} support={int(row['support'])}"
+        )
 
 
 class InfiniteDataLoader:
@@ -155,6 +164,10 @@ def train(args: argparse.Namespace) -> None:
             f"final_score={result['final_score']:.4f} "
             f"qwk={result['adjusted_qwk']:.4f} scr={result['special_category_recognition']:.4f}"
         )
+        val_merged = val_ds.df[["case_id", "lirads_score"]].astype({"case_id": str}).merge(
+            val_preds.astype({"case_id": str}), on="case_id", how="inner",
+        )
+        log_per_class_metrics(compute_per_class_metrics(val_merged["lirads_score"], val_merged["prediction"]))
 
         if result["final_score"] > best_score:
             best_score = result["final_score"]
@@ -205,11 +218,7 @@ def train(args: argparse.Namespace) -> None:
     metrics_path = fold_tagged_path(os.path.splitext(test_pred_path)[0] + "_per_class_metrics.csv", args.fold)
     metrics_df.to_csv(metrics_path, index=False)
     print_to_log(f"  saved per-class precision/recall to {metrics_path}")
-    for _, row in metrics_df.iterrows():
-        print_to_log(
-            f"    {row['label']:<10} precision={row['precision']:.3f} recall={row['recall']:.3f} "
-            f"f1={row['f1']:.3f} support={int(row['support'])}"
-        )
+    log_per_class_metrics(metrics_df)
 
 
 def main() -> None:
