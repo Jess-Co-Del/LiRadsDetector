@@ -21,7 +21,7 @@ from . import config
 from .backbone import Dinov2SliceEncoder
 from .dataset import LiRadsCaseDataset, collate_cases, label_to_targets
 from .model import LiRadsNet
-from .predict import compute_per_class_metrics, run_inference, save_confusion_matrix
+from .predict import compute_per_class_metrics, run_inference, run_inference_tta, save_confusion_matrix
 from .splits import fold_tagged_path, load_fold
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -167,7 +167,10 @@ def train(args: argparse.Namespace) -> None:
 
         avg_loss = total_loss / max(n_batches, 1)
 
-        val_preds = run_inference(model, val_loader, device)
+        if args.tta_views > 0:
+            val_preds = run_inference_tta(model, val_ds, device, args.tta_views)
+        else:
+            val_preds = run_inference(model, val_loader, device)
         with tempfile.TemporaryDirectory() as tmp:
             gt_path = os.path.join(tmp, "gt.csv")
             pred_path = os.path.join(tmp, "pred.csv")
@@ -196,17 +199,21 @@ def train(args: argparse.Namespace) -> None:
     print_to_log(f"Training complete. best val final_score={best_score:.4f}")
 
     test_ds = LiRadsCaseDataset(args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["test"])
-    test_loader = DataLoader(
-        test_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers, collate_fn=collate_cases,
-    )
     if os.path.exists(args.out):
         checkpoint = torch.load(args.out, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
     else:
         print_to_log(f"  no checkpoint was ever saved to {args.out}; testing with the last epoch's in-memory weights")
 
-    test_preds = run_inference(model, test_loader, device)
+    if args.tta_views > 0:
+        print_to_log(f"  running test-time augmentation ({args.tta_views} views) on the ordinal decision")
+        test_preds = run_inference_tta(model, test_ds, device, args.tta_views)
+    else:
+        test_loader = DataLoader(
+            test_ds, batch_size=args.batch_size, shuffle=False,
+            num_workers=args.num_workers, collate_fn=collate_cases,
+        )
+        test_preds = run_inference(model, test_loader, device)
     with tempfile.TemporaryDirectory() as tmp:
         gt_path = os.path.join(tmp, "gt.csv")
         pred_path = os.path.join(tmp, "pred.csv")
@@ -272,6 +279,15 @@ def main() -> None:
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", default="checkpoints/lirads_model.pt")
+    parser.add_argument(
+        "--tta_views", type=int, default=0,
+        help=(
+            "test-time augmentation, applied to both the per-epoch val-split scoring and the final "
+            "held-out test-split evaluation: average this many extra augmented forward passes into the "
+            "LR-1..LR-5 ordinal decision (0 disables TTA). Non-zero multiplies per-epoch validation cost, "
+            "since it reruns every ordinal-gated val case tta_views+1 times."
+        ),
+    )
     args = parser.parse_args()
     train(args)
 

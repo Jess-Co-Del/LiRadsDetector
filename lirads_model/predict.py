@@ -16,8 +16,9 @@ import os
 import sys
 import tempfile
 from collections import Counter
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import precision_recall_fscore_support
@@ -25,7 +26,7 @@ from torch.utils.data import DataLoader
 
 from . import config, preprocessing
 from .backbone import Dinov2SliceEncoder
-from .dataset import LiRadsCaseDataset, collate_cases
+from .dataset import LiRadsCaseDataset, _find_case_dir, collate_cases
 from .model import LiRadsNet, decode_prediction
 from .splits import fold_tagged_path, load_fold
 
@@ -82,16 +83,57 @@ def _remap_for_submission(label: str) -> str:
 
 
 @torch.no_grad()
+def _forward_with_tta(
+    model: LiRadsNet,
+    case_dir: str,
+    case_id: str,
+    max_slices: int,
+    tta_views: int,
+    rng: Optional[np.random.Generator] = None,
+):
+    """Runs one deterministic (unaugmented) forward pass to decide the
+    category gate, then -- only when that pass says "ordinal" and
+    tta_views > 0 -- runs `tta_views` more forward passes on freshly
+    augmented views of the same case (config.TTA_VIEWS / see
+    augmentation.py) and averages their ordinal-head logits in with the
+    deterministic pass's, before the caller decodes a final label. The
+    category-gate logits are always the single deterministic pass's, never
+    averaged -- TTA here only steadies which of LR-1..LR-5 gets picked.
+    Returns (logits_cat, logits_ord), each a (num_classes,) CPU tensor.
+    """
+    phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
+    mask_path = preprocessing.find_case_mask_path(case_dir)
+
+    phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, max_slices)
+    logits_cat, logits_ord = model([phase_data])
+    logits_cat, logits_ord = logits_cat[0].cpu(), logits_ord[0].cpu()
+
+    cat_idx = int(torch.argmax(logits_cat).item())
+    if tta_views > 0 and config.CAT_NAMES[cat_idx] == "ordinal":
+        rng = rng if rng is not None else np.random.default_rng()
+        ord_logits_sum = logits_ord.clone()
+        for _ in range(tta_views):
+            aug_phase_data = preprocessing.build_case_tensors(
+                phase_paths, mask_path, max_slices, augment=True, rng=rng,
+            )
+            _, aug_logits_ord = model([aug_phase_data])
+            ord_logits_sum += aug_logits_ord[0].cpu()
+        logits_ord = ord_logits_sum / (tta_views + 1)
+
+    return logits_cat, logits_ord
+
+
+@torch.no_grad()
 def predict_case(
     model: LiRadsNet,
     case_dir: str,
     case_id: str,
     device: torch.device,
     max_slices: int = config.MAX_SLICES_PER_CASE,
+    tta_views: int = config.TTA_VIEWS,
 ) -> str:
-    phase_data = _preprocess_case(case_dir, case_id, max_slices)
-    logits_cat, logits_ord = model([phase_data])
-    label = decode_prediction(logits_cat[0].cpu(), logits_ord[0].cpu())
+    logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views)
+    label = decode_prediction(logits_cat, logits_ord)
     return _remap_for_submission(label)
 
 
@@ -102,15 +144,15 @@ def predict_case_ensemble(
     case_id: str,
     device: torch.device,
     max_slices: int = config.MAX_SLICES_PER_CASE,
+    tta_views: int = config.TTA_VIEWS,
 ) -> str:
-    """Runs every model in `models` on the same preprocessed case and
-    majority-votes over their decoded predictions. With a single model this
-    is equivalent to predict_case()."""
-    phase_data = _preprocess_case(case_dir, case_id, max_slices)
+    """Runs every model in `models` on the same case (each with its own TTA
+    pass, see _forward_with_tta) and majority-votes over their decoded
+    predictions. With a single model this is equivalent to predict_case()."""
     labels = []
     for model in models:
-        logits_cat, logits_ord = model([phase_data])
-        labels.append(decode_prediction(logits_cat[0].cpu(), logits_ord[0].cpu()))
+        logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views)
+        labels.append(decode_prediction(logits_cat, logits_ord))
     return _remap_for_submission(majority_vote(labels))
 
 
@@ -127,6 +169,26 @@ def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) ->
         for i, case_id in enumerate(batch["case_ids"]):
             label = decode_prediction(logits_cat[i].cpu(), logits_ord[i].cpu())
             rows.append({"case_id": case_id, "prediction": label})
+    return pd.DataFrame(rows)
+
+
+@torch.no_grad()
+def run_inference_tta(model: LiRadsNet, dataset: LiRadsCaseDataset, device: torch.device, tta_views: int) -> pd.DataFrame:
+    """
+    Per-case (not batched) equivalent of run_inference() that applies TTA to
+    the ordinal decision -- see _forward_with_tta. Not batched because TTA
+    needs to rebuild each case's tensors several times with independent
+    random augmentations, which a single collated DataLoader batch can't
+    express. Fine for the case counts a fold's val/test split or a
+    submission run involve; use plain run_inference() for tta_views=0.
+    """
+    model.eval()
+    rows = []
+    for _, row in dataset.df.iterrows():
+        case_id = str(row["case_id"])
+        case_dir = _find_case_dir(dataset.data_root, case_id)
+        logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, dataset.max_slices, tta_views)
+        rows.append({"case_id": case_id, "prediction": decode_prediction(logits_cat, logits_ord)})
     return pd.DataFrame(rows)
 
 
@@ -186,26 +248,33 @@ def predict_fold_test_set(
     batch_size: int = 4,
     num_workers: int = 4,
     backbone_source: str = "local",
+    tta_views: int = 0,
 ) -> pd.DataFrame:
     """
     Runs every model in `checkpoint_paths` over the `test` split of `fold`
     (looked up in `splits.json`), returning a (case_id, prediction) DataFrame.
     With more than one checkpoint, each model's decoded predictions are
-    majority-voted per case.
+    majority-voted per case. `tta_views > 0` switches to the per-case
+    run_inference_tta() path (see its docstring for why it can't batch).
     """
     if isinstance(checkpoint_paths, str):
         checkpoint_paths = [checkpoint_paths]
 
     test_case_ids = load_fold(splits_json, fold)["test"]
     test_ds = LiRadsCaseDataset(metadata_csv, data_root, max_slices, case_ids=test_case_ids)
-    test_loader = DataLoader(
-        test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_cases,
-    )
 
     per_model_preds = []
-    for checkpoint_path in checkpoint_paths:
-        model = load_model(checkpoint_path, device, backbone_source)
-        per_model_preds.append(run_inference(model, test_loader, device))
+    if tta_views > 0:
+        for checkpoint_path in checkpoint_paths:
+            model = load_model(checkpoint_path, device, backbone_source)
+            per_model_preds.append(run_inference_tta(model, test_ds, device, tta_views))
+    else:
+        test_loader = DataLoader(
+            test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collate_cases,
+        )
+        for checkpoint_path in checkpoint_paths:
+            model = load_model(checkpoint_path, device, backbone_source)
+            per_model_preds.append(run_inference(model, test_loader, device))
 
     combined = pd.concat(per_model_preds, ignore_index=True)
     return combined.groupby("case_id", as_index=False)["prediction"].agg(lambda preds: majority_vote(list(preds)))
@@ -230,12 +299,21 @@ def main() -> None:
     parser.add_argument("--max_slices", type=int, default=config.MAX_SLICES_PER_CASE)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--score", action="store_true", help="also score predictions against ground truth with the challenge metric")
+    parser.add_argument(
+        "--tta_views", type=int, default=0,
+        help=(
+            "test-time augmentation: average this many extra augmented forward passes into the "
+            "LR-1..LR-5 ordinal decision (0 disables TTA; see config.TTA_VIEWS for the default used "
+            "by predict_case/predict_case_ensemble at submission time)"
+        ),
+    )
     args = parser.parse_args()
 
     device = torch.device(args.device)
     preds = predict_fold_test_set(
         args.checkpoint, args.data_root, args.metadata_csv, args.splits_json, args.fold, device,
         max_slices=args.max_slices, batch_size=args.batch_size, num_workers=args.num_workers,
+        tta_views=args.tta_views,
         backbone_source=args.backbone_source,
     )
 

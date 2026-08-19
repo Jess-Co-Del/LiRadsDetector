@@ -125,4 +125,16 @@ AUGMENT_ZOOM_PROB = 0.5
 AUGMENT_FLIP_PROB = 0.5                      # independent prob. for horizontal and vertical flip
 AUGMENT_INTENSITY_SHIFT_HU = 15.0            # max +/- additive HU shift (image only, never the mask)
 AUGMENT_INTENSITY_SCALE_RANGE = (0.9, 1.1)   # multiplicative HU jitter range
+
+# ── Test-time augmentation (inference only) ──────────────────────────────────
+# predict.predict_case/predict_case_ensemble always decide the category gate
+# (ordinal vs. LR-M/LR-TIV/No lesion) from a single deterministic pass. When
+# that pass says "ordinal", TTA_VIEWS additional forward passes -- each on a
+# fresh augmentation.sample_augment_params() view of the same case, reusing
+# the same transforms/probabilities as training -- are averaged in with it to
+# pick the final LR-1..LR-5 index, trading inference cost for a steadier
+# ordinal decision. Never applied to the category gate itself, and never
+# applied at training time. 0 disables TTA (single deterministic pass, the
+# original behavior).
+TTA_VIEWS = 4
 AUGMENT_INTENSITY_PROB = 0.5
