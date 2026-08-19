@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from datetime import datetime
 from time import time
 
@@ -41,6 +41,20 @@ def compute_class_weights(counts: dict, num_classes: int) -> torch.Tensor:
     freqs = np.clip(freqs, 1, None)  # avoid div-by-zero for unseen classes
     weights = freqs.sum() / (num_classes * freqs)
     return torch.tensor(weights, dtype=torch.float32)
+
+
+def make_balanced_sampler(labels) -> WeightedRandomSampler:
+    """
+    Per-example inverse-frequency weight over the full lirads_score label
+    (not just the 4-way cat_idx), so a rare special class like LR-TIV gets
+    oversampled relative to a more common one (e.g. LR-M) that happens to
+    share its category bucket -- loss-level class weighting alone can't fix
+    this, since with few train iterations per epoch a rare class can simply
+    never get drawn
+    """
+    counts = pd.Series([str(l).strip() for l in labels]).value_counts()
+    weights = [1.0 / counts[str(l).strip()] for l in labels]
+    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
 
 def log_per_class_metrics(metrics_df: pd.DataFrame) -> None:
@@ -92,7 +106,9 @@ def train(args: argparse.Namespace) -> None:
 
     train_loader = InfiniteDataLoader(
         DataLoader(
-            train_ds, batch_size=args.batch_size, shuffle=True,
+            train_ds, batch_size=args.batch_size,
+            sampler=make_balanced_sampler(train_ds.df["lirads_score"]) if args.balanced_sampling else None,
+            shuffle=False if args.balanced_sampling else True,
             num_workers=args.num_workers, collate_fn=collate_cases,
         )
     )
@@ -239,6 +255,13 @@ def main() -> None:
     parser.add_argument(
         "--augment", action=argparse.BooleanOptionalAction, default=True,
         help="apply random rotation/zoom/flip/intensity augmentation to the train split (--no-augment to disable)",
+    )
+    parser.add_argument(
+        "--balanced_sampling", action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "oversample rare lirads_score classes (e.g. LR-TIV) via a WeightedRandomSampler on the train split, "
+            "instead of plain random shuffling (--no-balanced_sampling to disable)"
+        ),
     )
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)
