@@ -20,11 +20,12 @@ Usage:
         --data_root ./data/cases
 """
 
-import argparse
+import argparse, sys
 
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lirads_model import config, preprocessing
 from lirads_model.dataset import _find_case_dir
 

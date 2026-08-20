@@ -36,12 +36,12 @@ Usage:
 """
 
 import argparse
-import os
+import os, sys
 import shutil
 import tempfile
-
 import pandas as pd
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lirads_model import config, preprocessing
 from lirads_model.dataset import _find_case_dir
 
@@ -68,14 +68,18 @@ def main() -> None:
 
     import torch
     from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
-
+    print(f"Starting predictor")
     predictor = nnUNetPredictor(
         tile_step_size=0.5, use_gaussian=True, use_mirroring=True,
         perform_everything_on_device=(args.device == "cuda"), device=torch.device(args.device), verbose=False,
     )
+    print(f"Loading predictor from {args.model_dir}")
+
     predictor.initialize_from_trained_model_folder(
         args.model_dir, use_folds=tuple(args.folds), checkpoint_name=args.checkpoint_name,
     )
+    
+    print(f"Loading cases from {args.metadata_csv}")
 
     df = pd.read_csv(args.metadata_csv)
     df.columns = df.columns.str.strip().str.lower()
