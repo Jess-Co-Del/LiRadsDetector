@@ -300,7 +300,7 @@ def main() -> None:
     parser.add_argument("--out", default=None, help="where to save predictions CSV (default: next to the first --checkpoint)")
     parser.add_argument("--backbone_source", choices=["local", "hub"], default="local")
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--max_slices", type=int, default=config.MAX_SLICES_PER_CASE)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--score", action="store_true", help="also score predictions against ground truth with the challenge metric")
@@ -338,7 +338,7 @@ def main() -> None:
     print_to_log(f"saved {len(preds)} predictions to {out_path}", log_path)
 
     if args.score:
-        test_case_ids = load_fold(args.splits_json, args.fold)["test"]
+        test_case_ids = pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list() # load_fold(args.splits_json, args.fold)["test"]
         gt_ds = LiRadsCaseDataset(args.metadata_csv, args.data_root, args.max_slices, case_ids=test_case_ids)
         with tempfile.TemporaryDirectory() as tmp:
             gt_path = os.path.join(tmp, "gt.csv")
