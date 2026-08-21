@@ -37,7 +37,8 @@ def label_to_targets(label: str):
 
 def encode_clinical_features(row: pd.Series) -> torch.Tensor:
     """One-hots `aphe` (missing/unrecognized values fall into an explicit
-    "Unknown" category) and appends the four binary washout/capsule flags,
+    "Unknown" category), appends the four binary washout/capsule flags, and
+    appends max_diameter_mm scaled by config.CLINICAL_DIAMETER_SCALE_MM,
     giving a fixed-length config.CLINICAL_FEATURE_DIM vector."""
     aphe = row["aphe"]
     aphe = str(aphe).strip() if pd.notna(aphe) else "Unknown"
@@ -45,7 +46,8 @@ def encode_clinical_features(row: pd.Series) -> torch.Tensor:
         aphe = "Unknown"
     aphe_onehot = [1.0 if aphe == cat else 0.0 for cat in config.APHE_CATEGORIES]
     binary_feats = [float(row[col]) for col in config.CLINICAL_BINARY_FEATURES]
-    return torch.tensor(aphe_onehot + binary_feats, dtype=torch.float32)
+    diameter_feat = [float(row["max_diameter_mm"]) / config.CLINICAL_DIAMETER_SCALE_MM]
+    return torch.tensor(aphe_onehot + binary_feats + diameter_feat, dtype=torch.float32)
 
 
 def _find_case_dir(data_root: str, case_id: str) -> str:
@@ -72,7 +74,7 @@ class LiRadsCaseDataset(Dataset):
             raise ValueError(f"{metadata_csv} is missing a 'lirads_score' column")
         if "case_id" not in df.columns:
             raise ValueError(f"{metadata_csv} is missing a 'case_id' column")
-        clinical_cols = ["aphe"] + config.CLINICAL_BINARY_FEATURES
+        clinical_cols = ["aphe", "max_diameter_mm"] + config.CLINICAL_BINARY_FEATURES
         missing_cols = [c for c in clinical_cols if c not in df.columns]
         if missing_cols:
             raise ValueError(f"{metadata_csv} is missing clinical feature column(s): {missing_cols}")

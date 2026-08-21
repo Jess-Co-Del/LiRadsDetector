@@ -96,7 +96,13 @@ HEAD_DROPOUT = 0.2
 # absent, the same pattern used for a missing CT phase.
 APHE_CATEGORIES = ["Absent", "Non-rim APHE", "Rim APHE", "Unknown"]
 CLINICAL_BINARY_FEATURES = ["washout_venous", "washout_delayed", "capsule_venous", "capsule_delayed"]
-CLINICAL_FEATURE_DIM = len(APHE_CATEGORIES) + len(CLINICAL_BINARY_FEATURES)  # 8
+# max_diameter_mm ranges roughly 0-280 in train_metadata.csv (see its
+# per-label breakdown) -- clinical_encoder's first layer is a per-sample
+# LayerNorm over the whole clinical vector, so a raw mm value would dominate
+# that normalization next to the 0/1 one-hot/binary features. Dividing by
+# this scale first brings it into a comparable ~0-3 range.
+CLINICAL_DIAMETER_SCALE_MM = 290  # MAX at 281.9
+CLINICAL_FEATURE_DIM = len(APHE_CATEGORIES) + len(CLINICAL_BINARY_FEATURES) + 1  # 9 (+1 for scaled max_diameter_mm)
 CLINICAL_EMBED_DIM = 64
 
 # ── Per-phase 3D-CNN volume encoder ──────────────────────────────────────────
