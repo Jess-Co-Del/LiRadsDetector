@@ -313,9 +313,18 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
-    print_to_log("=" * 70)
-    print_to_log(f"Starting prediction. Model path = {args.checkpoint}.")
-    print_to_log("=" * 70)
+    if len(args.checkpoint) == 1:
+        default_stem = os.path.splitext(args.checkpoint[0])[0] + "_test_predictions.csv"
+    else:
+        ckpt_dir = os.path.dirname(os.path.abspath(args.checkpoint[0]))
+        default_stem = os.path.join(ckpt_dir, f"ensemble_of_{len(args.checkpoint)}_test_predictions.csv")
+    out_path = fold_tagged_path(args.out or default_stem, args.fold)
+    out_dir = os.path.dirname(os.path.abspath(out_path))
+    os.makedirs(out_dir, exist_ok=True)
+    log_path = os.path.splitext(out_path)[0] + ".log"
+    print_to_log("=" * 70, log_path)
+    print_to_log(f"Starting prediction. Model path = {args.checkpoint}.", log_path)
+    print_to_log("=" * 70, log_path)
 
     device = torch.device(args.device)
     preds = predict_fold_test_set(
@@ -325,16 +334,8 @@ def main() -> None:
         backbone_source=args.backbone_source,
     )
 
-    if len(args.checkpoint) == 1:
-        default_stem = os.path.splitext(args.checkpoint[0])[0] + "_test_predictions.csv"
-    else:
-        ckpt_dir = os.path.dirname(os.path.abspath(args.checkpoint[0]))
-        default_stem = os.path.join(ckpt_dir, f"ensemble_of_{len(args.checkpoint)}_test_predictions.csv")
-    out_path = fold_tagged_path(args.out or default_stem, args.fold)
-    out_dir = os.path.dirname(os.path.abspath(out_path))
-    os.makedirs(out_dir, exist_ok=True)
     preds.to_csv(out_path, index=False)
-    print_to_log(f"saved {len(preds)} predictions to {out_path}")
+    print_to_log(f"saved {len(preds)} predictions to {out_path}", log_path)
 
     if args.score:
         test_case_ids = load_fold(args.splits_json, args.fold)["test"]
@@ -347,7 +348,8 @@ def main() -> None:
             result = compute_challenge_score(gt_path, pred_path, bootstrap=False)
         print_to_log(
             f"fold {args.fold} test set: final_score={result['final_score']:.4f} "
-            f"qwk={result['adjusted_qwk']:.4f} scr={result['special_category_recognition']:.4f}"
+            f"qwk={result['adjusted_qwk']:.4f} scr={result['special_category_recognition']:.4f}",
+            log_path
         )
 
         cm_path = fold_tagged_path(os.path.splitext(out_path)[0] + "_confusion_matrix.png", args.fold)
@@ -355,13 +357,13 @@ def main() -> None:
             preds.astype({"case_id": str}), on="case_id", how="inner",
         )
         save_confusion_matrix(merged["lirads_score"], merged["prediction"], cm_path)
-        print_to_log(f"saved confusion matrix to {cm_path}")
+        print_to_log(f"saved confusion matrix to {cm_path}", log_path)
 
         metrics_df = compute_per_class_metrics(merged["lirads_score"], merged["prediction"])
         metrics_path = fold_tagged_path(os.path.splitext(out_path)[0] + "_per_class_metrics.csv", args.fold)
         metrics_df.to_csv(metrics_path, index=False)
-        print_to_log(f"saved per-class precision/recall to {metrics_path}")
-        print_to_log(metrics_df.to_string(index=False))
+        print_to_log(f"saved per-class precision/recall to {metrics_path}", log_path)
+        print_to_log(metrics_df.to_string(index=False), log_path)
 
 
 if __name__ == "__main__":

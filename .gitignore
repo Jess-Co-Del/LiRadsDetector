@@ -17,6 +17,7 @@ venv/
 *.egg-info/
 checkpoints/
 checkpoints_v0/
+logs/
 submission/lirads_model
 submission/model
 submission/packages

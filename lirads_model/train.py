@@ -49,11 +49,12 @@ def make_balanced_sampler(labels) -> WeightedRandomSampler:
     return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
 
-def log_per_class_metrics(metrics_df: pd.DataFrame) -> None:
+def log_per_class_metrics(metrics_df: pd.DataFrame, log_path: str) -> None:
     for _, row in metrics_df.iterrows():
         print_to_log(
             f"    {row['label']:<10} precision={row['precision']:.3f} recall={row['recall']:.3f} "
-            f"f1={row['f1']:.3f} support={int(row['support'])}"
+            f"f1={row['f1']:.3f} support={int(row['support'])}",
+            log_path,
         )
 
 
@@ -74,11 +75,13 @@ class InfiniteDataLoader:
 
 
 def train(args: argparse.Namespace) -> None:
-    print_to_log("=" * 70)
-    print_to_log(f"Starting training. Fold = {args.fold}.")
-    print_to_log("=" * 70)
-    device = torch.device(args.device)
     args.out = fold_tagged_path(args.out, args.fold)
+    log_path = os.path.splitext(args.out)[0] + ".log"
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    print_to_log("=" * 70, log_path)
+    print_to_log(f"Starting training. Fold = {args.fold}.", log_path)
+    print_to_log("=" * 70, log_path)
+    device = torch.device(args.device)
 
     fold = load_fold(args.splits_json, args.fold)
 
@@ -125,7 +128,7 @@ def train(args: argparse.Namespace) -> None:
         num_workers=args.num_workers, collate_fn=collate_cases,
     )
 
-    print_to_log(f"Datasets loaded.")
+    print_to_log(f"Datasets loaded.", log_path)
 
     backbone = Dinov2SliceEncoder.from_pretrained()
     model = LiRadsNet(backbone, use_cnn=args.use_cnn, use_clinical=args.use_clinical).to(device)
@@ -141,16 +144,13 @@ def train(args: argparse.Namespace) -> None:
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
 
-    out_dir = os.path.dirname(os.path.abspath(args.out))
-    os.makedirs(out_dir, exist_ok=True)
-
-    print_to_log(f"Model loaded.")
+    print_to_log(f"Model loaded.", log_path)
 
     best_score = -1.0
     for epoch in range(1, args.epochs + 1):
-        print_to_log('')
-        print_to_log(f"Epoch {epoch}.")
-        print_to_log(f"Current learning rate: {np.round(optimizer.param_groups[0]['lr'], decimals=5)}")
+        print_to_log('', log_path)
+        print_to_log(f"Epoch {epoch}.", log_path)
+        print_to_log(f"Current learning rate: {np.round(optimizer.param_groups[0]['lr'], decimals=5)}", log_path)
         model.train()
         model.backbone.eval()  # frozen backbone: never let dropout/drop-path move it
 
@@ -189,12 +189,13 @@ def train(args: argparse.Namespace) -> None:
         print_to_log(
             f"Epoch {epoch}: train_loss={avg_loss:.4f} "
             f"final_score={result['final_score']:.4f} "
-            f"qwk={result['adjusted_qwk']:.4f} scr={result['special_category_recognition']:.4f}"
+            f"qwk={result['adjusted_qwk']:.4f} scr={result['special_category_recognition']:.4f}",
+            log_path
         )
         val_merged = val_ds.df[["case_id", "lirads_score"]].astype({"case_id": str}).merge(
             val_preds.astype({"case_id": str}), on="case_id", how="inner",
         )
-        log_per_class_metrics(compute_per_class_metrics(val_merged["lirads_score"], val_merged["prediction"]))
+        log_per_class_metrics(compute_per_class_metrics(val_merged["lirads_score"], val_merged["prediction"]), log_path)
 
         if result["final_score"] > best_score:
             best_score = result["final_score"]
@@ -202,19 +203,19 @@ def train(args: argparse.Namespace) -> None:
                 {"model_state_dict": model.state_dict(), "use_cnn": args.use_cnn, "use_clinical": args.use_clinical},
                 args.out,
             )
-            print_to_log(f"  saved new best checkpoint to {args.out} (score={best_score:.4f})")
+            print_to_log(f"  saved new best checkpoint to {args.out} (score={best_score:.4f})", log_path)
 
-    print_to_log(f"Training complete. best val final_score={best_score:.4f}")
+    print_to_log(f"Training complete. best val final_score={best_score:.4f}", log_path)
 
     test_ds = LiRadsCaseDataset(args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["test"])
     if os.path.exists(args.out):
         checkpoint = torch.load(args.out, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
     else:
-        print_to_log(f"  no checkpoint was ever saved to {args.out}; testing with the last epoch's in-memory weights")
+        print_to_log(f"  no checkpoint was ever saved to {args.out}; testing with the last epoch's in-memory weights", log_path)
 
     if args.tta_views > 0:
-        print_to_log(f"  running test-time augmentation ({args.tta_views} views) on the ordinal decision")
+        print_to_log(f"  running test-time augmentation ({args.tta_views} views) on the ordinal decision", log_path)
         test_preds = run_inference_tta(model, test_ds, device, args.tta_views)
     else:
         test_loader = DataLoader(
@@ -231,25 +232,26 @@ def train(args: argparse.Namespace) -> None:
 
     print_to_log(
         f"Test (fold {args.fold}): final_score={test_result['final_score']:.4f} "
-        f"qwk={test_result['adjusted_qwk']:.4f} scr={test_result['special_category_recognition']:.4f}"
+        f"qwk={test_result['adjusted_qwk']:.4f} scr={test_result['special_category_recognition']:.4f}",
+        log_path
     )
 
     test_pred_path = args.test_predictions_out or os.path.splitext(args.out)[0] + "_test_predictions.csv"
     test_preds.to_csv(test_pred_path, index=False)
-    print_to_log(f"  saved test predictions to {test_pred_path}")
+    print_to_log(f"  saved test predictions to {test_pred_path}", log_path)
 
     cm_path = fold_tagged_path(os.path.splitext(test_pred_path)[0] + "_confusion_matrix.png", args.fold)
     merged = test_ds.df[["case_id", "lirads_score"]].astype({"case_id": str}).merge(
         test_preds.astype({"case_id": str}), on="case_id", how="inner",
     )
     save_confusion_matrix(merged["lirads_score"], merged["prediction"], cm_path)
-    print_to_log(f"  saved test confusion matrix to {cm_path}")
+    print_to_log(f"  saved test confusion matrix to {cm_path}", log_path)
 
     metrics_df = compute_per_class_metrics(merged["lirads_score"], merged["prediction"])
     metrics_path = fold_tagged_path(os.path.splitext(test_pred_path)[0] + "_per_class_metrics.csv", args.fold)
     metrics_df.to_csv(metrics_path, index=False)
-    print_to_log(f"  saved per-class precision/recall to {metrics_path}")
-    log_per_class_metrics(metrics_df)
+    print_to_log(f"  saved per-class precision/recall to {metrics_path}", log_path)
+    log_per_class_metrics(metrics_df, log_path)
 
 
 def main() -> None:

@@ -8,11 +8,20 @@ from time import time
 from datetime import datetime
 
 
-def print_to_log(a):
+# ── Logging ──────────────────────────────────────────────────────────────────
+LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+LOG_FILE_PATH = os.path.join(LOG_DIR, "lirads.log")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+
+def print_to_log(a, LOG_FILE_PATH=None):
     timestamp = time()
     dt_object = datetime.fromtimestamp(timestamp)
-    args = (f"{dt_object}:", a)
-    print(*args)
+    line = f"{dt_object}: {a}"
+    print(line)
+    if LOG_FILE_PATH:
+        with open(LOG_FILE_PATH, "a") as f:
+            f.write(line + "\n")
 
 # ── Labels ───────────────────────────────────────────────────────────────────
 ORDINAL_LABELS = ["LR-1", "LR-2", "LR-3", "LR-4", "LR-5"]

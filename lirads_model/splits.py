@@ -45,7 +45,7 @@ def fold_tagged_path(path: str, fold) -> str:
     folds never collide, whether the base path was left at its default or
     set explicitly."""
     root, ext = os.path.splitext(path)
-    tag = f"_fold{fold}"
+    tag = f"_fold_{fold}"
     if tag in root:
         return path
     return f"{root}{tag}{ext}"
