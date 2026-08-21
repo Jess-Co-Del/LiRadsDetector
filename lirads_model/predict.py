@@ -25,6 +25,7 @@ from sklearn.metrics import precision_recall_fscore_support
 from torch.utils.data import DataLoader
 
 from . import config, preprocessing
+from .config import print_to_log
 from .backbone import Dinov2SliceEncoder
 from .dataset import LiRadsCaseDataset, _find_case_dir, collate_cases
 from .model import LiRadsNet, decode_prediction
@@ -312,6 +313,9 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    print_to_log("=" * 70)
+    print_to_log(f"Starting prediction. Model path = {args.checkpoint}.")
+    print_to_log("=" * 70)
 
     device = torch.device(args.device)
     preds = predict_fold_test_set(
@@ -330,7 +334,7 @@ def main() -> None:
     out_dir = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(out_dir, exist_ok=True)
     preds.to_csv(out_path, index=False)
-    print(f"saved {len(preds)} predictions to {out_path}")
+    print_to_log(f"saved {len(preds)} predictions to {out_path}")
 
     if args.score:
         test_case_ids = load_fold(args.splits_json, args.fold)["test"]
@@ -341,7 +345,7 @@ def main() -> None:
             gt_ds.df.rename(columns={"lirads_score": "label"})[["case_id", "label"]].to_csv(gt_path, index=False)
             preds.to_csv(pred_path, index=False)
             result = compute_challenge_score(gt_path, pred_path, bootstrap=False)
-        print(
+        print_to_log(
             f"fold {args.fold} test set: final_score={result['final_score']:.4f} "
             f"qwk={result['adjusted_qwk']:.4f} scr={result['special_category_recognition']:.4f}"
         )
@@ -351,13 +355,13 @@ def main() -> None:
             preds.astype({"case_id": str}), on="case_id", how="inner",
         )
         save_confusion_matrix(merged["lirads_score"], merged["prediction"], cm_path)
-        print(f"saved confusion matrix to {cm_path}")
+        print_to_log(f"saved confusion matrix to {cm_path}")
 
         metrics_df = compute_per_class_metrics(merged["lirads_score"], merged["prediction"])
         metrics_path = fold_tagged_path(os.path.splitext(out_path)[0] + "_per_class_metrics.csv", args.fold)
         metrics_df.to_csv(metrics_path, index=False)
-        print(f"saved per-class precision/recall to {metrics_path}")
-        print(metrics_df.to_string(index=False))
+        print_to_log(f"saved per-class precision/recall to {metrics_path}")
+        print_to_log(metrics_df.to_string(index=False))
 
 
 if __name__ == "__main__":

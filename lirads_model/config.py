@@ -4,6 +4,15 @@ Shared constants for the AMPLIFAI LI-RADS classifier
 
 import math
 import os
+from time import time
+from datetime import datetime
+
+
+def print_to_log(a):
+    timestamp = time()
+    dt_object = datetime.fromtimestamp(timestamp)
+    args = (f"{dt_object}:", a)
+    print(*args)
 
 # ── Labels ───────────────────────────────────────────────────────────────────
 ORDINAL_LABELS = ["LR-1", "LR-2", "LR-3", "LR-4", "LR-5"]

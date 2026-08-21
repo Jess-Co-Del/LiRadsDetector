@@ -12,12 +12,11 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from datetime import datetime
-from time import time
 
 from batchgenerators.dataloading.nondet_multi_threaded_augmenter import NonDetMultiThreadedAugmenter
 
 from . import config
+from .config import print_to_log
 from .backbone import Dinov2SliceEncoder
 from .dataset import LiRadsCaseDataset, collate_cases, label_to_targets
 from .model import LiRadsNet
@@ -27,13 +26,6 @@ from .splits import fold_tagged_path, load_fold
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO_ROOT, "amplifai-codabench"))
 from evaluate import evaluate as compute_challenge_score  # noqa: E402
-
-
-def print_to_log(a):
-    timestamp = time()
-    dt_object = datetime.fromtimestamp(timestamp)
-    args = (f"{dt_object}:", a)
-    print(*args)
 
 
 def compute_class_weights(counts: dict, num_classes: int) -> torch.Tensor:
