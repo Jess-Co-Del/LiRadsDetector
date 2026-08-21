@@ -172,7 +172,8 @@ def transplant_case(
     recipient_case_id: str,
     rng: np.random.Generator,
 ) -> tuple:
-    """Loads the donor's real lesion and the recipient's raw volumes + liver
+    """
+    Loads the donor's real lesion and the recipient's raw volumes + liver
     mask from disk, and pastes the former into the latter at a random spot
     inside the recipient's liver. Returns (phase_vols, mask_vol) in the same
     shape preprocessing.load_case_volumes() would for a real case, ready for
