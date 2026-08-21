@@ -90,19 +90,34 @@ def train(args: argparse.Namespace) -> None:
 
     fold = load_fold(args.splits_json, args.fold)
 
+    # train_ds = LiRadsCaseDataset(
+    #     args.metadata_csv,
+    #     args.data_root,
+    #     args.max_slices,
+    #     case_ids=fold["train"],
+    #     augment=args.augment,
+    #     transplant=args.transplant,
+    # )
+    # val_ds = LiRadsCaseDataset(
+    #     args.metadata_csv,
+    #     args.data_root,
+    #     args.max_slices,
+    #     case_ids=fold["val"]
+    # )
+
     train_ds = LiRadsCaseDataset(
         args.metadata_csv,
         args.data_root,
         args.max_slices,
-        case_ids=fold["train"],
+        case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv').case_id.to_list(),
         augment=args.augment,
         transplant=args.transplant,
     )
     val_ds = LiRadsCaseDataset(
-        args.metadata_csv,
+        '/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv',
         args.data_root,
         args.max_slices,
-        case_ids=fold["val"]
+        case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list()
     )
 
     train_loader = InfiniteDataLoader(

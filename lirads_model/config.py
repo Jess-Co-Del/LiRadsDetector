@@ -124,7 +124,7 @@ CNN_HIDDEN_CHANNELS = 256
 # Each transform is independently applied with its own probability; a
 # disabled transform is a no-op (rotate 0deg / zoom 1.0 / no flip / no
 # intensity jitter).
-AUGMENT_ROTATION_DEG = 15.0                  # max +/- rotation
+AUGMENT_ROTATION_DEG = 180.0                  # max +/- rotation
 AUGMENT_ROTATION_PROB = 0.5
 AUGMENT_ZOOM_RANGE = (0.85, 1.15)            # scale factor range
 AUGMENT_ZOOM_PROB = 0.5
@@ -170,4 +170,4 @@ TRANSPLANT_MAX_PLACEMENT_ATTEMPTS = 25  # random center draws tried before givin
 # Phase the liver segmenter was trained/run on (portal venous, the standard
 # phase for liver segmentation datasets like LiTS); segment_livers.py reads
 # this phase's volume per case.
-LIVER_SEGMENTATION_PHASE = "VEN"
+LIVER_SEGMENTATION_PHASE = "DEL"

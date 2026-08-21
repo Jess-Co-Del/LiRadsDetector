@@ -36,7 +36,7 @@ def lesion_slice_indices(mask: np.ndarray, max_slices: int = config.MAX_SLICES_P
     other_axes = tuple(a for a in range(mask.ndim) if a != config.SLICE_AXIS)
     z_with_lesion = np.where(mask.sum(axis=other_axes) > 0)[0]
     if len(z_with_lesion) == 0:
-        z_with_lesion = np.array([1, 10])
+        z_with_lesion = np.array([40, 50])
         #raise ValueError("lesion mask contains no positive voxels")
 
     z_min, z_max = int(z_with_lesion.min()), int(z_with_lesion.max())

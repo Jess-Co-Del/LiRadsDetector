@@ -261,7 +261,11 @@ def predict_fold_test_set(
         checkpoint_paths = [checkpoint_paths]
 
     test_case_ids = load_fold(splits_json, fold)["test"]
-    test_ds = LiRadsCaseDataset(metadata_csv, data_root, max_slices, case_ids=test_case_ids)
+    # test_ds = LiRadsCaseDataset(metadata_csv, data_root, max_slices, case_ids=test_case_ids)
+
+    test_ds = LiRadsCaseDataset(
+        metadata_csv, data_root, max_slices,
+    case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list())
 
     per_model_preds = []
     if tta_views > 0:

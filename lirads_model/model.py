@@ -14,7 +14,8 @@ PhaseData = Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tenso
 
 
 class PhaseVolumeCNN(nn.Module):
-    """Small 3D CNN that encodes one phase's lesion-cropped slice stack,
+    """
+    Small 3D CNN that encodes one phase's lesion-cropped slice stack,
     given as a single-channel (1, S, H, W) volume, into a fixed-size
     (1, out_size, out_size) feature map. AdaptiveAvgPool3d collapses the
     depth dimension to 1 regardless of S (the sampled slice count varies per
