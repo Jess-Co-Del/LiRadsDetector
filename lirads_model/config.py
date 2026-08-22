@@ -14,7 +14,7 @@ LOG_FILE_PATH = os.path.join(LOG_DIR, "lirads.log")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 
-def print_to_log(a, LOG_FILE_PATH=None):
+def print_to_log(a, LOG_FILE_PATH=LOG_FILE_PATH):
     timestamp = time()
     dt_object = datetime.fromtimestamp(timestamp)
     line = f"{dt_object}: {a}"
@@ -70,7 +70,7 @@ MAX_SLICES_PER_CASE = 16
 # phases before normalization. Wide enough to keep both hypervascular lesion
 # enhancement and liver parenchyma contrast within range.
 WINDOW_CENTER = 0
-WINDOW_WIDTH = 250
+WINDOW_WIDTH = 500
 WINDOW_LOW = WINDOW_CENTER - WINDOW_WIDTH / 2
 WINDOW_HIGH = WINDOW_CENTER + WINDOW_WIDTH / 2
 
@@ -178,7 +178,7 @@ AUGMENT_INTENSITY_PROB = 0.5
 # approximated -- the segmenter's output is expected at
 # <case_dir>/annotations/liver.nii.gz (find_case_liver_path()), the same
 # per-case layout as the existing lesion mask.
-TRANSPLANT_DONOR_LABELS = ["LR-1", "LR-2", "LR-3"]
+TRANSPLANT_DONOR_LABELS = ["LR-1", "LR-2", "LR-3", "LR-4"]
 TRANSPLANT_PROB = 0.5              # per __getitem__ call on an eligible donor case
 TRANSPLANT_MARGIN_FRAC = 0.15      # patch margin around the lesion bbox, each side
 TRANSPLANT_FEATHER_VOX = 4         # gaussian-blur radius (voxels) for the paste alpha
