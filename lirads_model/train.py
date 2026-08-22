@@ -28,6 +28,28 @@ sys.path.insert(0, os.path.join(_REPO_ROOT, "amplifai-codabench"))
 from evaluate import evaluate as compute_challenge_score  # noqa: E402
 
 
+def make_lr_scheduler(optimizer: torch.optim.Optimizer, args: argparse.Namespace):
+    """Builds the epoch-level LR schedule selected by --lr_scheduler. Called
+    once per epoch (see train()'s epoch loop, right after that epoch's
+    validation) rather than per-iteration, since validation only runs once
+    per epoch and 'plateau' needs its metric. "none" (the default) returns
+    None and keeps --lr constant for the whole run, matching the previous
+    (pre-scheduler) behavior."""
+    if args.lr_scheduler == "none":
+        return None
+    if args.lr_scheduler == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr_min)
+    if args.lr_scheduler == "step":
+        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
+    if args.lr_scheduler == "plateau":
+        # mode="max": final_score (the challenge metric) is better when
+        # higher, unlike a loss.
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="max", factor=args.lr_gamma, patience=args.lr_patience,
+        )
+    raise ValueError(f"unrecognized --lr_scheduler: {args.lr_scheduler!r}")
+
+
 def compute_class_weights(counts: dict, num_classes: int) -> torch.Tensor:
     freqs = np.array([counts.get(i, 0) for i in range(num_classes)], dtype=np.float64)
     freqs = np.clip(freqs, 1, None)  # avoid div-by-zero for unseen classes
@@ -154,6 +176,7 @@ def train(args: argparse.Namespace) -> None:
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = make_lr_scheduler(optimizer, args)
 
     print_to_log(f"Model loaded.", log_path)
 
@@ -202,6 +225,12 @@ def train(args: argparse.Namespace) -> None:
             val_ds.df.rename(columns={"lirads_score": "label"})[["case_id", "label"]].to_csv(gt_path, index=False)
             val_preds.to_csv(pred_path, index=False)
             result = compute_challenge_score(gt_path, pred_path, bootstrap=False)
+
+        if scheduler is not None:
+            if args.lr_scheduler == "plateau":
+                scheduler.step(result["final_score"])
+            else:
+                scheduler.step()
 
         print_to_log(
             f"Epoch {epoch}: train_loss={avg_loss:.4f} "
@@ -328,6 +357,23 @@ def main() -> None:
     parser.add_argument("--num_iterations_per_epoch", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument(
+        "--lr_scheduler", choices=["none", "cosine", "step", "plateau"], default="none",
+        help=(
+            "epoch-level learning rate schedule, stepped once per epoch after that epoch's validation "
+            "(see make_lr_scheduler()). 'none' (default): --lr stays constant for the whole run. "
+            "'cosine': cosine decay from --lr down to --lr_min over --epochs. 'step': multiply by --lr_gamma "
+            "every --lr_step_size epochs. 'plateau': multiply by --lr_gamma when val final_score hasn't "
+            "improved for --lr_patience epochs."
+        ),
+    )
+    parser.add_argument("--lr_min", type=float, default=0.0, help="[cosine] learning rate at the end of the schedule")
+    parser.add_argument("--lr_step_size", type=int, default=10, help="[step] epochs between each decay")
+    parser.add_argument("--lr_gamma", type=float, default=0.1, help="[step/plateau] multiplicative decay factor")
+    parser.add_argument(
+        "--lr_patience", type=int, default=3,
+        help="[plateau] epochs with no val final_score improvement before decaying",
+    )
     parser.add_argument("--max_slices", type=int, default=config.MAX_SLICES_PER_CASE)
     parser.add_argument("--num_workers", type=int, default=2)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
