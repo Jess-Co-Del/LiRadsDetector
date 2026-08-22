@@ -16,9 +16,11 @@ from . import config
 
 
 def sample_augment_params(rng: np.random.Generator) -> dict:
-    """One set of augmentation parameters, reused for every slice of every
+    """
+    One set of augmentation parameters, reused for every slice of every
     phase in a case. Each transform is independently enabled with its own
-    probability; disabled transforms are no-ops."""
+    probability; disabled transforms are no-ops.
+    """
     return {
         "rotate_deg": (
             rng.uniform(-config.AUGMENT_ROTATION_DEG, config.AUGMENT_ROTATION_DEG)
