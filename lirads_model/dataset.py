@@ -67,6 +67,7 @@ class LiRadsCaseDataset(Dataset):
         case_ids: Optional[Sequence[str]] = None,
         augment: bool = False,
         transplant: bool = False,
+        ordinal_only: bool = False,
     ):
         df = pd.read_csv(metadata_csv)
         df.columns = df.columns.str.strip().str.lower()
@@ -84,11 +85,20 @@ class LiRadsCaseDataset(Dataset):
             missing = wanted - set(df["case_id"].astype(str))
             if missing:
                 raise ValueError(f"{len(missing)} case_id(s) from the split not found in {metadata_csv}: {sorted(missing)[:5]}...")
+        if ordinal_only:
+            # Single-head ordinal-only training (see model.LiRadsNet's
+            # use_cat_head=False): there's no category head/target to make
+            # sense of LR-M/LR-TIV/No lesion cases here, so they're dropped
+            # from the split (after case_ids selection, so this is a silent
+            # narrowing of an existing split rather than a "requested case
+            # missing" error).
+            df = df[df["lirads_score"].str.strip().isin(config.ORDINAL_LABELS)]
         self.df = df.reset_index(drop=True)
         self.data_root = data_root
         self.max_slices = max_slices
         self.augment = augment
         self.transplant = transplant
+        self.ordinal_only = ordinal_only
 
     def __len__(self) -> int:
         return len(self.df)

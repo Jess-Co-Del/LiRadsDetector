@@ -85,6 +85,8 @@ def train(args: argparse.Namespace) -> None:
 
     fold = load_fold(args.splits_json, args.fold)
 
+    ordinal_only = args.head_mode == "ordinal"
+
     # train_ds = LiRadsCaseDataset(
     #     args.metadata_csv,
     #     args.data_root,
@@ -92,12 +94,14 @@ def train(args: argparse.Namespace) -> None:
     #     case_ids=fold["train"],
     #     augment=args.augment,
     #     transplant=args.transplant,
+    #     ordinal_only=ordinal_only,
     # )
     # val_ds = LiRadsCaseDataset(
     #     args.metadata_csv,
     #     args.data_root,
     #     args.max_slices,
-    #     case_ids=fold["val"]
+    #     case_ids=fold["val"],
+    #     ordinal_only=ordinal_only,
     # )
 
     train_ds = LiRadsCaseDataset(
@@ -107,12 +111,14 @@ def train(args: argparse.Namespace) -> None:
         case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv').case_id.to_list(),
         augment=args.augment,
         transplant=args.transplant,
+        ordinal_only=ordinal_only,
     )
     val_ds = LiRadsCaseDataset(
         '/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv',
         args.data_root,
         args.max_slices,
-        case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list()
+        case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list(),
+        ordinal_only=ordinal_only,
     )
 
     train_loader = InfiniteDataLoader(
@@ -131,15 +137,20 @@ def train(args: argparse.Namespace) -> None:
     print_to_log(f"Datasets loaded.", log_path)
 
     backbone = Dinov2SliceEncoder.from_pretrained()
-    model = LiRadsNet(backbone, use_cnn=args.use_cnn, use_clinical=args.use_clinical).to(device)
+    model = LiRadsNet(
+        backbone, use_cnn=args.use_cnn, use_clinical=args.use_clinical, use_cat_head=not ordinal_only,
+    ).to(device)
 
     cat_idxs, ord_idxs = zip(*(label_to_targets(str(l)) for l in train_ds.df["lirads_score"]))
-    cat_counts = {i: cat_idxs.count(i) for i in range(len(config.CAT_NAMES))}
     ord_only = [o for o in ord_idxs if o >= 0]
     ord_counts = {i: ord_only.count(i) for i in range(len(config.ORDINAL_LABELS))}
-
-    cat_criterion = nn.CrossEntropyLoss(weight=compute_class_weights(cat_counts, len(config.CAT_NAMES)).to(device))
     ord_criterion = nn.CrossEntropyLoss(weight=compute_class_weights(ord_counts, len(config.ORDINAL_LABELS)).to(device))
+
+    if ordinal_only:
+        cat_criterion = None
+    else:
+        cat_counts = {i: cat_idxs.count(i) for i in range(len(config.CAT_NAMES))}
+        cat_criterion = nn.CrossEntropyLoss(weight=compute_class_weights(cat_counts, len(config.CAT_NAMES)).to(device))
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
@@ -160,11 +171,17 @@ def train(args: argparse.Namespace) -> None:
             cat_idx = batch["cat_idx"].to(device)
             ord_idx = batch["ord_idx"].to(device)
             logits_cat, logits_ord = model(batch["phase_data"], batch["clinical_features"])
-            loss = cat_criterion(logits_cat, cat_idx)
-
-            ord_mask = cat_idx == 0
-            if ord_mask.any():
-                loss = loss + ord_criterion(logits_ord[ord_mask], ord_idx[ord_mask])
+            if ordinal_only:
+                # every case in the batch is ordinal-labeled already (see
+                # LiRadsCaseDataset's ordinal_only filtering), so ord_idx is
+                # always valid -- no masking needed, and there's no cat_head
+                # / cat_criterion to contribute a loss term.
+                loss = ord_criterion(logits_ord, ord_idx)
+            else:
+                loss = cat_criterion(logits_cat, cat_idx)
+                ord_mask = cat_idx == 0
+                if ord_mask.any():
+                    loss = loss + ord_criterion(logits_ord[ord_mask], ord_idx[ord_mask])
 
             optimizer.zero_grad()
             loss.backward()
@@ -200,14 +217,21 @@ def train(args: argparse.Namespace) -> None:
         if result["final_score"] > best_score:
             best_score = result["final_score"]
             torch.save(
-                {"model_state_dict": model.state_dict(), "use_cnn": args.use_cnn, "use_clinical": args.use_clinical},
+                {
+                    "model_state_dict": model.state_dict(),
+                    "use_cnn": args.use_cnn,
+                    "use_clinical": args.use_clinical,
+                    "use_cat_head": not ordinal_only,
+                },
                 args.out,
             )
             print_to_log(f"  saved new best checkpoint to {args.out} (score={best_score:.4f})", log_path)
 
     print_to_log(f"Training complete. best val final_score={best_score:.4f}", log_path)
 
-    test_ds = LiRadsCaseDataset(args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["test"])
+    test_ds = LiRadsCaseDataset(
+        args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["test"], ordinal_only=ordinal_only,
+    )
     if os.path.exists(args.out):
         checkpoint = torch.load(args.out, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -268,6 +292,16 @@ def main() -> None:
     parser.add_argument(
         "--use_clinical", action=argparse.BooleanOptionalAction, default=True,
         help="use the clinical/tabular feature branch (aphe/washout/capsule) (--no-use_clinical for images-only)",
+    )
+    parser.add_argument(
+        "--head_mode", choices=["dual", "ordinal"], default="dual",
+        help=(
+            "'dual' (default): the current 4-way category head + 5-way ordinal head, jointly trained on the "
+            "full label set (LR-1..5, LR-M, LR-TIV, No lesion). 'ordinal': single-head training on the "
+            "ordinal target alone -- no category head at all, and LR-M/LR-TIV/No lesion cases are dropped "
+            "from train/val/test (see LiRadsCaseDataset's ordinal_only), since they have no meaningful "
+            "ordinal target and there's no category head left to route them through."
+        ),
     )
     parser.add_argument(
         "--augment", action=argparse.BooleanOptionalAction, default=True,

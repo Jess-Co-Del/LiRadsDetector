@@ -42,10 +42,11 @@ def load_model(checkpoint_path: str, device: torch.device, backbone_source: str 
     loading our trained weights on top (useful for local dev without a
     vendored snapshot).
 
-    The checkpoint records whether the 3D-CNN and clinical branches were
-    used at training time (train.py --use_cnn/--use_clinical), so the right
-    architecture is reconstructed automatically; checkpoints saved before
-    this existed default to both branches on, matching their actual shape."""
+    The checkpoint records whether the 3D-CNN, clinical, and category-head
+    branches were used at training time (train.py --use_cnn/--use_clinical/
+    --head_mode), so the right architecture is reconstructed automatically;
+    checkpoints saved before these existed default to all branches on,
+    matching their actual shape."""
     if backbone_source == "local":
         backbone = Dinov2SliceEncoder.from_local()
     else:
@@ -54,7 +55,8 @@ def load_model(checkpoint_path: str, device: torch.device, backbone_source: str 
     checkpoint = torch.load(checkpoint_path, map_location=device)
     use_cnn = checkpoint.get("use_cnn", True)
     use_clinical = checkpoint.get("use_clinical", True)
-    model = LiRadsNet(backbone, use_cnn=use_cnn, use_clinical=use_clinical).to(device)
+    use_cat_head = checkpoint.get("use_cat_head", True)
+    model = LiRadsNet(backbone, use_cnn=use_cnn, use_clinical=use_clinical, use_cat_head=use_cat_head).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     return model
@@ -93,24 +95,28 @@ def _forward_with_tta(
     rng: Optional[np.random.Generator] = None,
 ):
     """Runs one deterministic (unaugmented) forward pass to decide the
-    category gate, then -- only when that pass says "ordinal" and
-    tta_views > 0 -- runs `tta_views` more forward passes on freshly
-    augmented views of the same case (config.TTA_VIEWS / see
-    augmentation.py) and averages their ordinal-head logits in with the
-    deterministic pass's, before the caller decodes a final label. The
-    category-gate logits are always the single deterministic pass's, never
-    averaged -- TTA here only steadies which of LR-1..LR-5 gets picked.
-    Returns (logits_cat, logits_ord), each a (num_classes,) CPU tensor.
+    category gate, then -- only when that pass says "ordinal" (always true
+    for a single-head, ordinal-only model, where logits_cat is None -- see
+    model.LiRadsNet's use_cat_head) and tta_views > 0 -- runs `tta_views`
+    more forward passes on freshly augmented views of the same case
+    (config.TTA_VIEWS / see augmentation.py) and averages their ordinal-head
+    logits in with the deterministic pass's, before the caller decodes a
+    final label. The category-gate logits are always the single
+    deterministic pass's, never averaged -- TTA here only steadies which of
+    LR-1..LR-5 gets picked. Returns (logits_cat, logits_ord): logits_cat is
+    a (4,) CPU tensor, or None for an ordinal-only model; logits_ord is
+    always a (5,) CPU tensor.
     """
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
 
     phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, max_slices)
     logits_cat, logits_ord = model([phase_data])
-    logits_cat, logits_ord = logits_cat[0].cpu(), logits_ord[0].cpu()
+    logits_cat = logits_cat[0].cpu() if logits_cat is not None else None
+    logits_ord = logits_ord[0].cpu()
 
-    cat_idx = int(torch.argmax(logits_cat).item())
-    if tta_views > 0 and config.CAT_NAMES[cat_idx] == "ordinal":
+    is_ordinal = logits_cat is None or config.CAT_NAMES[int(torch.argmax(logits_cat).item())] == "ordinal"
+    if tta_views > 0 and is_ordinal:
         rng = rng if rng is not None else np.random.default_rng()
         ord_logits_sum = logits_ord.clone()
         for _ in range(tta_views):
@@ -168,7 +174,8 @@ def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) ->
     for batch in loader:
         logits_cat, logits_ord = model(batch["phase_data"], batch["clinical_features"])
         for i, case_id in enumerate(batch["case_ids"]):
-            label = decode_prediction(logits_cat[i].cpu(), logits_ord[i].cpu())
+            cat_i = logits_cat[i].cpu() if logits_cat is not None else None
+            label = decode_prediction(cat_i, logits_ord[i].cpu())
             rows.append({"case_id": case_id, "prediction": label})
     return pd.DataFrame(rows)
 

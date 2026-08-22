@@ -56,6 +56,7 @@ class LiRadsNet(nn.Module):
         clinical_embed_dim: int = config.CLINICAL_EMBED_DIM,
         use_cnn: bool = True,
         use_clinical: bool = True,
+        use_cat_head: bool = True,
     ):
         super().__init__()
         self.backbone = backbone
@@ -64,6 +65,7 @@ class LiRadsNet(nn.Module):
         self.phase_names = config.PHASE_NAMES
         self.use_cnn = use_cnn
         self.use_clinical = use_clinical
+        self.use_cat_head = use_cat_head
 
         for p in self.backbone.parameters():
             p.requires_grad = False
@@ -115,7 +117,12 @@ class LiRadsNet(nn.Module):
             nn.Linear(hidden1, hidden2),
             nn.GELU(),
         )
-        self.cat_head = nn.Linear(hidden2, len(config.CAT_NAMES))
+        # Optional: use_cat_head=False drops the 4-way category head
+        # entirely, for single-head training on the ordinal target alone
+        # (see config.ORDINAL_LABELS and LiRadsCaseDataset's ordinal_only) --
+        # forward() then returns None in its place, and decode_prediction()
+        # skips the category gate and reads the ordinal head directly.
+        self.cat_head = nn.Linear(hidden2, len(config.CAT_NAMES)) if self.use_cat_head else None
         self.ord_head = nn.Linear(hidden2, len(config.ORDINAL_LABELS))
 
     def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
@@ -166,22 +173,27 @@ class LiRadsNet(nn.Module):
         self,
         batch_phase_data: List[Dict[str, PhaseData]],
         clinical_features: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
         case_feats = torch.stack([self.encode_case(pd) for pd in batch_phase_data], dim=0)
         if self.use_clinical:
             clinical_feats = self.encode_clinical(clinical_features, len(batch_phase_data))
             case_feats = torch.cat([case_feats, clinical_feats], dim=1)
         h = self.head(case_feats)
-        return self.cat_head(h), self.ord_head(h)
+        logits_cat = self.cat_head(h) if self.use_cat_head else None
+        return logits_cat, self.ord_head(h)
 
 
-def decode_prediction(logits_cat: torch.Tensor, logits_ord: torch.Tensor) -> str:
-    """logits_cat: (4,), logits_ord: (5,) -> one of config.VALID_LABELS or
-    config.NO_LESION_LABEL (the latter must be remapped before it's ever
-    submitted to the actual challenge, which doesn't score it)."""
-    cat_idx = int(torch.argmax(logits_cat).item())
-    cat_name = config.CAT_NAMES[cat_idx]
-    if cat_name == "ordinal":
-        ord_idx = int(torch.argmax(logits_ord).item())
-        return config.ORDINAL_LABELS[ord_idx]
-    return cat_name
+def decode_prediction(logits_cat: Optional[torch.Tensor], logits_ord: torch.Tensor) -> str:
+    """logits_cat: (4,) or None, logits_ord: (5,) -> one of config.VALID_LABELS
+    or config.NO_LESION_LABEL (the latter must be remapped before it's ever
+    submitted to the actual challenge, which doesn't score it). logits_cat is
+    None for a single-head, ordinal-only model (LiRadsNet(use_cat_head=False))
+    -- there's no category gate to consult, so the ordinal head's argmax is
+    returned directly."""
+    if logits_cat is not None:
+        cat_idx = int(torch.argmax(logits_cat).item())
+        cat_name = config.CAT_NAMES[cat_idx]
+        if cat_name != "ordinal":
+            return cat_name
+    ord_idx = int(torch.argmax(logits_ord).item())
+    return config.ORDINAL_LABELS[ord_idx]
