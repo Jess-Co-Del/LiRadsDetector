@@ -328,9 +328,9 @@ def main() -> None:
     out_path = fold_tagged_path(args.out or default_stem, args.fold)
     out_dir = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(out_dir, exist_ok=True)
-    log_path = os.path.splitext(out_path)[0] + ".log"
+    log_path = os.path.splitext(args.checkpoint[0])[0] + ".log"
     print_to_log("=" * 70, log_path)
-    print_to_log(f"Starting prediction. Model path = {args.checkpoint}.", log_path)
+    print_to_log(f"Starting prediction. Model paths = {out_path}.", log_path)
     print_to_log("=" * 70, log_path)
 
     device = torch.device(args.device)
@@ -341,8 +341,8 @@ def main() -> None:
         backbone_source=args.backbone_source,
     )
 
-    preds.to_csv(out_path, index=False)
-    print_to_log(f"saved {len(preds)} predictions to {out_path}", log_path)
+    preds.to_csv(default_stem, index=False)
+    print_to_log(f"saved {len(preds)} predictions to {default_stem}", log_path)
 
     if args.score:
         test_case_ids = pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list() # load_fold(args.splits_json, args.fold)["test"]
