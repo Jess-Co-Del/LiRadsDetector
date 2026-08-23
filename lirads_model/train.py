@@ -109,6 +109,32 @@ def train(args: argparse.Namespace) -> None:
 
     ordinal_only = args.head_mode == "ordinal"
 
+    # --resume: peek at an existing checkpoint at args.out *before*
+    # building the dataset/model below, since its architecture flags
+    # (use_cnn/use_clinical/use_cat_head) are frozen into its saved weights'
+    # shapes and must override whatever --use_cnn/--use_clinical/--head_mode
+    # were passed this time -- resuming with a different architecture would
+    # make model.load_state_dict() below fail (or silently mismatch).
+    resume_checkpoint = None
+    if args.resume:
+        if os.path.exists(args.out):
+            resume_checkpoint = torch.load(args.out, map_location=device)
+            print_to_log(f"--resume: resuming from existing checkpoint at {args.out}.", log_path)
+            ckpt_use_cnn = resume_checkpoint.get("use_cnn", args.use_cnn)
+            ckpt_use_clinical = resume_checkpoint.get("use_clinical", args.use_clinical)
+            ckpt_use_cat_head = resume_checkpoint.get("use_cat_head", not ordinal_only)
+            if (ckpt_use_cnn, ckpt_use_clinical, ckpt_use_cat_head) != (args.use_cnn, args.use_clinical, not ordinal_only):
+                print_to_log(
+                    "  --resume: overriding --use_cnn/--use_clinical/--head_mode with the checkpoint's own "
+                    f"architecture (use_cnn={ckpt_use_cnn}, use_clinical={ckpt_use_clinical}, "
+                    f"use_cat_head={ckpt_use_cat_head}) -- a model's architecture can't change mid-training.",
+                    log_path,
+                )
+            args.use_cnn, args.use_clinical = ckpt_use_cnn, ckpt_use_clinical
+            ordinal_only = not ckpt_use_cat_head
+        else:
+            print_to_log(f"--resume: no checkpoint found at {args.out}; starting fresh.", log_path)
+
     # train_ds = LiRadsCaseDataset(
     #     args.metadata_csv,
     #     args.data_root,
@@ -178,10 +204,30 @@ def train(args: argparse.Namespace) -> None:
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = make_lr_scheduler(optimizer, args)
 
+    start_epoch = 0
+    best_score = -1.0
+    if resume_checkpoint is not None:
+        model.load_state_dict(resume_checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in resume_checkpoint:
+            optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
+        else:
+            print_to_log("  --resume: checkpoint predates optimizer-state saving -- optimizer starts fresh.", log_path)
+        if scheduler is not None and resume_checkpoint.get("scheduler_state_dict") is not None:
+            try:
+                scheduler.load_state_dict(resume_checkpoint["scheduler_state_dict"])
+            except Exception as e:
+                print_to_log(f"  --resume: couldn't restore scheduler state ({e}) -- scheduler starts fresh.", log_path)
+        start_epoch = resume_checkpoint.get("epoch", 0)
+        best_score = resume_checkpoint.get("best_score", -1.0)
+        print_to_log(
+            f"  resuming after epoch {start_epoch} (best val final_score so far={best_score:.4f}); "
+            f"running {args.epochs} more epoch(s).",
+            log_path,
+        )
+
     print_to_log(f"Model loaded.", log_path)
 
-    best_score = -1.0
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch + 1, start_epoch + args.epochs + 1):
         print_to_log('', log_path)
         print_to_log(f"Epoch {epoch}.", log_path)
         print_to_log(f"Current learning rate: {np.round(optimizer.param_groups[0]['lr'], decimals=5)}", log_path)
@@ -248,6 +294,10 @@ def train(args: argparse.Namespace) -> None:
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
+                    "epoch": epoch,
+                    "best_score": best_score,
                     "use_cnn": args.use_cnn,
                     "use_clinical": args.use_clinical,
                     "use_cat_head": not ordinal_only,
@@ -350,6 +400,16 @@ def main() -> None:
             "paste a donor case's real lesion into a different recipient case's liver (see lesion_transplant.py). "
             "Off by default -- requires scripts/segment_livers.py to have already produced a liver.nii.gz for "
             "recipient cases; cases missing one simply aren't used as recipients."
+        ),
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help=(
+            "resume from the checkpoint already at --out (fold-tagged), if one exists: restores model, "
+            "optimizer, and LR scheduler state, plus the best val final_score seen so far, and runs --epochs "
+            "more epochs on top of it. The checkpoint's own use_cnn/use_clinical/head_mode (whatever it was "
+            "originally trained with) override this run's --use_cnn/--use_clinical/--head_mode, since a "
+            "model's architecture can't change mid-training. If --out doesn't exist yet, starts fresh instead."
         ),
     )
     parser.add_argument("--epochs", type=int, default=30)
