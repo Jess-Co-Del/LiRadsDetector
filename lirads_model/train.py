@@ -522,7 +522,7 @@ def main() -> None:
         help="[plateau] epochs with no val final_score improvement before decaying",
     )
     parser.add_argument("--max_slices", type=int, default=config.MAX_SLICES_PER_CASE)
-    parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", default="checkpoints/lirads_model.pt")
     parser.add_argument(
