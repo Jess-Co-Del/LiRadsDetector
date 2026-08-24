@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from . import config
 from .backbone import Dinov2SliceEncoder
+from .losses import corn_label_from_logits
 
 PhaseData = Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
 
@@ -57,8 +58,11 @@ class LiRadsNet(nn.Module):
         use_cnn: bool = True,
         use_clinical: bool = True,
         use_cat_head: bool = True,
+        ordinal_head_type: str = "softmax",
     ):
         super().__init__()
+        if ordinal_head_type not in ("softmax", "corn"):
+            raise ValueError(f"unrecognized ordinal_head_type: {ordinal_head_type!r}")
         self.backbone = backbone
         self.embed_dim = embed_dim
         self.grid_size = grid_size
@@ -66,6 +70,7 @@ class LiRadsNet(nn.Module):
         self.use_cnn = use_cnn
         self.use_clinical = use_clinical
         self.use_cat_head = use_cat_head
+        self.ordinal_head_type = ordinal_head_type
 
         for p in self.backbone.parameters():
             p.requires_grad = False
@@ -123,7 +128,11 @@ class LiRadsNet(nn.Module):
         # forward() then returns None in its place, and decode_prediction()
         # skips the category gate and reads the ordinal head directly.
         self.cat_head = nn.Linear(hidden2, len(config.CAT_NAMES)) if self.use_cat_head else None
-        self.ord_head = nn.Linear(hidden2, len(config.ORDINAL_LABELS))
+        # "corn" sizes the ordinal head to num_classes-1 conditional-threshold
+        # logits instead of a plain num_classes-way softmax -- see
+        # losses.CornSoftQWKLoss/corn_loss and decode_prediction() below.
+        ord_out_dim = len(config.ORDINAL_LABELS) - 1 if self.ordinal_head_type == "corn" else len(config.ORDINAL_LABELS)
+        self.ord_head = nn.Linear(hidden2, ord_out_dim)
 
     def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
         patch_tokens, cls_token = self.backbone(pixel_values)  # (S,N,D), (S,D)
@@ -183,17 +192,24 @@ class LiRadsNet(nn.Module):
         return logits_cat, self.ord_head(h)
 
 
-def decode_prediction(logits_cat: Optional[torch.Tensor], logits_ord: torch.Tensor) -> str:
-    """logits_cat: (4,) or None, logits_ord: (5,) -> one of config.VALID_LABELS
-    or config.NO_LESION_LABEL (the latter must be remapped before it's ever
+def decode_prediction(
+    logits_cat: Optional[torch.Tensor], logits_ord: torch.Tensor, ordinal_head_type: str = "softmax",
+) -> str:
+    """logits_cat: (4,) or None, logits_ord: (5,) for ordinal_head_type=
+    "softmax" or (4,) for "corn" (must match the LiRadsNet that produced it
+    -- see its ordinal_head_type) -> one of config.VALID_LABELS or
+    config.NO_LESION_LABEL (the latter must be remapped before it's ever
     submitted to the actual challenge, which doesn't score it). logits_cat is
     None for a single-head, ordinal-only model (LiRadsNet(use_cat_head=False))
-    -- there's no category gate to consult, so the ordinal head's argmax is
-    returned directly."""
+    -- there's no category gate to consult, so the ordinal head's decoded
+    rank is returned directly."""
     if logits_cat is not None:
         cat_idx = int(torch.argmax(logits_cat).item())
         cat_name = config.CAT_NAMES[cat_idx]
         if cat_name != "ordinal":
             return cat_name
-    ord_idx = int(torch.argmax(logits_ord).item())
+    if ordinal_head_type == "corn":
+        ord_idx = int(corn_label_from_logits(logits_ord.unsqueeze(0))[0].item())
+    else:
+        ord_idx = int(torch.argmax(logits_ord).item())
     return config.ORDINAL_LABELS[ord_idx]

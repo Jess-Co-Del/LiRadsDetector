@@ -19,6 +19,7 @@ from . import config
 from .config import print_to_log
 from .backbone import Dinov2SliceEncoder
 from .dataset import LiRadsCaseDataset, collate_cases, label_to_targets
+from .losses import CornSoftQWKLoss, SORDLoss
 from .model import LiRadsNet
 from .predict import compute_per_class_metrics, run_inference, run_inference_tta, save_confusion_matrix
 from .splits import fold_tagged_path, load_fold
@@ -55,6 +56,34 @@ def compute_class_weights(counts: dict, num_classes: int) -> torch.Tensor:
     freqs = np.clip(freqs, 1, None)  # avoid div-by-zero for unseen classes
     weights = freqs.sum() / (num_classes * freqs)
     return torch.tensor(weights, dtype=torch.float32)
+
+
+def build_ordinal_criterion(args: argparse.Namespace, ord_counts: dict, device: torch.device) -> nn.Module:
+    """Builds the loss for the ordinal head (LR-1..LR-5) selected by
+    --ordinal_loss. All options use the same class weighting (inverse
+    frequency over ord_counts). 'ce' and 'sord' both train a plain 5-way
+    softmax head (LiRadsNet(ordinal_head_type="softmax")) -- the only
+    difference is whether the target is one-hot (ce) or a rank-distance-
+    softened distribution (sord, see losses.SORDLoss). 'corn_qwk' instead
+    trains a 4-output CORN head (LiRadsNet(ordinal_head_type="corn"), see
+    build_ordinal_head_type() below) with L = CORN_loss + --qwk_lambda *
+    (1 - soft_QWK) -- see losses.CornSoftQWKLoss."""
+    weight = compute_class_weights(ord_counts, len(config.ORDINAL_LABELS)).to(device)
+    if args.ordinal_loss == "ce":
+        return nn.CrossEntropyLoss(weight=weight)
+    if args.ordinal_loss == "sord":
+        return SORDLoss(len(config.ORDINAL_LABELS), weight=weight).to(device)
+    if args.ordinal_loss == "corn_qwk":
+        return CornSoftQWKLoss(len(config.ORDINAL_LABELS), lambda_qwk=args.qwk_lambda, weight=weight).to(device)
+    raise ValueError(f"unrecognized --ordinal_loss: {args.ordinal_loss!r}")
+
+
+def build_ordinal_head_type(args: argparse.Namespace) -> str:
+    """The ordinal head's output shape depends on --ordinal_loss: 'corn_qwk'
+    needs LiRadsNet(ordinal_head_type="corn") (num_classes-1 conditional-
+    threshold logits), while 'ce'/'sord' both use the plain "softmax" head
+    (num_classes logits) -- see model.LiRadsNet."""
+    return "corn" if args.ordinal_loss == "corn_qwk" else "softmax"
 
 
 def make_balanced_sampler(labels) -> WeightedRandomSampler:
@@ -135,6 +164,20 @@ def train(args: argparse.Namespace) -> None:
         else:
             print_to_log(f"--resume: no checkpoint found at {args.out}; starting fresh.", log_path)
 
+    # Unlike use_cnn/use_clinical/use_cat_head above, ordinal_head_type is
+    # *not* forced to match the checkpoint -- --ordinal_loss is meant to be
+    # freely switchable across a --resume (e.g. a soft-QWK/CORN fine-tuning
+    # stage on top of a checkpoint trained with plain ce/sord). 'ce' and
+    # 'sord' share the same "softmax" head shape, so switching between those
+    # two resumes cleanly; switching to/from 'corn_qwk' changes ord_head's
+    # output shape, so that case gets a partial (trunk-only) load below
+    # instead of a full state_dict load.
+    ordinal_head_type = build_ordinal_head_type(args)
+    ordinal_head_changed = (
+        resume_checkpoint is not None
+        and resume_checkpoint.get("ordinal_head_type", "softmax") != ordinal_head_type
+    )
+
     # train_ds = LiRadsCaseDataset(
     #     args.metadata_csv,
     #     args.data_root,
@@ -187,12 +230,14 @@ def train(args: argparse.Namespace) -> None:
     backbone = Dinov2SliceEncoder.from_pretrained()
     model = LiRadsNet(
         backbone, use_cnn=args.use_cnn, use_clinical=args.use_clinical, use_cat_head=not ordinal_only,
+        ordinal_head_type=ordinal_head_type,
     ).to(device)
 
     cat_idxs, ord_idxs = zip(*(label_to_targets(str(l)) for l in train_ds.df["lirads_score"]))
     ord_only = [o for o in ord_idxs if o >= 0]
     ord_counts = {i: ord_only.count(i) for i in range(len(config.ORDINAL_LABELS))}
-    ord_criterion = nn.CrossEntropyLoss(weight=compute_class_weights(ord_counts, len(config.ORDINAL_LABELS)).to(device))
+    ord_criterion = build_ordinal_criterion(args, ord_counts, device)
+    print_to_log(f"Ordinal head loss: {args.ordinal_loss}", log_path)
 
     if ordinal_only:
         cat_criterion = None
@@ -206,7 +251,22 @@ def train(args: argparse.Namespace) -> None:
 
     start_epoch = 0
     best_score = -1.0
-    if resume_checkpoint is not None:
+    if resume_checkpoint is not None and ordinal_head_changed:
+        old_type = resume_checkpoint.get("ordinal_head_type", "softmax")
+        print_to_log(
+            f"  --resume: checkpoint's ordinal head is '{old_type}', this run's --ordinal_loss="
+            f"{args.ordinal_loss!r} needs '{ordinal_head_type}' -- ord_head's output shape differs "
+            "between the two, so it can't be resumed directly. Every other weight (backbone-adjacent "
+            "trunk, cat_head, clinical/CNN branches) is still loaded from the checkpoint; only ord_head "
+            "starts fresh, and the optimizer/scheduler/epoch counter reset to a fresh run since they're "
+            "tied to ord_head's old parameters/shape. best_score still carries over as the bar this run "
+            "needs to beat, since it's the same architecture-independent challenge metric.",
+            log_path,
+        )
+        trunk_state = {k: v for k, v in resume_checkpoint["model_state_dict"].items() if not k.startswith("ord_head.")}
+        model.load_state_dict(trunk_state, strict=False)
+        best_score = resume_checkpoint.get("best_score", -1.0)
+    elif resume_checkpoint is not None:
         model.load_state_dict(resume_checkpoint["model_state_dict"])
         if "optimizer_state_dict" in resume_checkpoint:
             optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
@@ -301,6 +361,7 @@ def train(args: argparse.Namespace) -> None:
                     "use_cnn": args.use_cnn,
                     "use_clinical": args.use_clinical,
                     "use_cat_head": not ordinal_only,
+                    "ordinal_head_type": ordinal_head_type,
                 },
                 args.out,
             )
@@ -381,6 +442,32 @@ def main() -> None:
             "from train/val/test (see LiRadsCaseDataset's ordinal_only), since they have no meaningful "
             "ordinal target and there's no category head left to route them through."
         ),
+    )
+    parser.add_argument(
+        "--ordinal_loss", choices=["ce", "sord", "corn_qwk"], default="ce",
+        help=(
+            "loss for the ordinal head (LR-1..LR-5). 'ce' (default): plain weighted "
+            "CrossEntropyLoss over a 5-way softmax head, treating the 5 ranks as unrelated "
+            "categories. 'sord': SORD (Soft Ordinal Regression) over that same 5-way softmax "
+            "head -- the one-hot target is replaced with a rank-distance-softened distribution, "
+            "so a near-miss prediction (e.g. LR-3 on a true LR-4) is penalized less than a far "
+            "one (e.g. LR-1 on a true LR-4). 'corn_qwk': switches the ordinal head itself to a "
+            "4-output CORN (rank-consistent conditional) parameterization and trains it with "
+            "L = CORN_loss + --qwk_lambda * (1 - soft_QWK), a differentiable quadratic-weighted-"
+            "kappa term added on top of CORN's per-threshold supervision -- meant as a "
+            "fine-tuning stage on top of a checkpoint already stable under 'ce'/'sord' (see "
+            "--resume), since it directly targets the challenge's own QWK-based metric. Only "
+            "affects the ordinal head; the category head (LR-M/LR-TIV/No lesion vs. ordinal) "
+            "always uses plain CE, since those classes have no ordinal relationship. Independent "
+            "of --resume's architecture lock: 'ce'/'sord' share one head shape and resume freely "
+            "between each other, while switching to/from 'corn_qwk' reuses every other weight "
+            "from the checkpoint but reinitializes ord_head fresh (see build_ordinal_head_type() "
+            "and the --resume handling in train())."
+        ),
+    )
+    parser.add_argument(
+        "--qwk_lambda", type=float, default=1.0,
+        help="[corn_qwk] weight of the soft-QWK term in L = CORN_loss + qwk_lambda * (1 - soft_QWK)",
     )
     parser.add_argument(
         "--augment", action=argparse.BooleanOptionalAction, default=True,

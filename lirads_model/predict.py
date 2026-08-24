@@ -56,7 +56,11 @@ def load_model(checkpoint_path: str, device: torch.device, backbone_source: str 
     use_cnn = checkpoint.get("use_cnn", True)
     use_clinical = checkpoint.get("use_clinical", True)
     use_cat_head = checkpoint.get("use_cat_head", True)
-    model = LiRadsNet(backbone, use_cnn=use_cnn, use_clinical=use_clinical, use_cat_head=use_cat_head).to(device)
+    ordinal_head_type = checkpoint.get("ordinal_head_type", "softmax")
+    model = LiRadsNet(
+        backbone, use_cnn=use_cnn, use_clinical=use_clinical, use_cat_head=use_cat_head,
+        ordinal_head_type=ordinal_head_type,
+    ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     return model
@@ -104,8 +108,10 @@ def _forward_with_tta(
     final label. The category-gate logits are always the single
     deterministic pass's, never averaged -- TTA here only steadies which of
     LR-1..LR-5 gets picked. Returns (logits_cat, logits_ord): logits_cat is
-    a (4,) CPU tensor, or None for an ordinal-only model; logits_ord is
-    always a (5,) CPU tensor.
+    a (4,) CPU tensor, or None for an ordinal-only model; logits_ord is a
+    (5,) CPU tensor for a "softmax" ordinal head or (4,) for a "corn" one
+    (see model.LiRadsNet's ordinal_head_type) -- the caller must decode it
+    with that same model's ordinal_head_type (decode_prediction's third arg).
     """
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
@@ -140,7 +146,7 @@ def predict_case(
     tta_views: int = config.TTA_VIEWS,
 ) -> str:
     logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views)
-    label = decode_prediction(logits_cat, logits_ord)
+    label = decode_prediction(logits_cat, logits_ord, model.ordinal_head_type)
     return _remap_for_submission(label)
 
 
@@ -159,7 +165,7 @@ def predict_case_ensemble(
     labels = []
     for model in models:
         logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views)
-        labels.append(decode_prediction(logits_cat, logits_ord))
+        labels.append(decode_prediction(logits_cat, logits_ord, model.ordinal_head_type))
     return _remap_for_submission(majority_vote(labels))
 
 
@@ -175,7 +181,7 @@ def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) ->
         logits_cat, logits_ord = model(batch["phase_data"], batch["clinical_features"])
         for i, case_id in enumerate(batch["case_ids"]):
             cat_i = logits_cat[i].cpu() if logits_cat is not None else None
-            label = decode_prediction(cat_i, logits_ord[i].cpu())
+            label = decode_prediction(cat_i, logits_ord[i].cpu(), model.ordinal_head_type)
             rows.append({"case_id": case_id, "prediction": label})
     return pd.DataFrame(rows)
 
@@ -196,7 +202,7 @@ def run_inference_tta(model: LiRadsNet, dataset: LiRadsCaseDataset, device: torc
         case_id = str(row["case_id"])
         case_dir = _find_case_dir(dataset.data_root, case_id)
         logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, dataset.max_slices, tta_views)
-        rows.append({"case_id": case_id, "prediction": decode_prediction(logits_cat, logits_ord)})
+        rows.append({"case_id": case_id, "prediction": decode_prediction(logits_cat, logits_ord, model.ordinal_head_type)})
     return pd.DataFrame(rows)
 
 
