@@ -8,23 +8,30 @@ from typing import Optional
 import nibabel as nib
 import numpy as np
 import torch
-from scipy.ndimage import zoom
 
 from . import augmentation, config
 
 
-def load_volume(path: str) -> np.ndarray:
-    return np.asarray(nib.load(path).get_fdata(), dtype=np.float32)
+def load_volume(path: str) -> torch.Tensor:
+    return torch.from_numpy(np.asarray(nib.load(path).get_fdata(), dtype=np.float32))
 
 
-def _resample_to_shape(vol: np.ndarray, target_shape: tuple) -> np.ndarray:
-    if vol.shape == target_shape:
+def _resample_to_shape(vol: torch.Tensor, target_shape: tuple) -> torch.Tensor:
+    """Resamples a full 3D volume (image or mask) onto target_shape via
+    trilinear interpolation. Output dtype matches `vol`'s -- e.g. a bool
+    mask comes back bool, via the same nonzero-after-interpolation cast
+    scipy.ndimage.zoom's output-dtype behavior gave the previous numpy
+    implementation (not a clean sub-voxel threshold, but preserved here for
+    behavioral parity)."""
+    if tuple(vol.shape) == tuple(target_shape):
         return vol
-    factors = tuple(t / s for t, s in zip(target_shape, vol.shape))
-    return zoom(vol, factors, order=1)
+    resized = torch.nn.functional.interpolate(
+        vol[None, None].float(), size=tuple(int(s) for s in target_shape), mode="trilinear", align_corners=False,
+    )[0, 0]
+    return resized.to(vol.dtype)
 
 
-def lesion_slice_indices(mask: np.ndarray, max_slices: int = config.MAX_SLICES_PER_CASE) -> np.ndarray:
+def lesion_slice_indices(mask: torch.Tensor, max_slices: int = config.MAX_SLICES_PER_CASE) -> torch.Tensor:
     """
     Returns exactly `max_slices` contiguous z-indices centered on the
     lesion's z-extent (fewer only if the volume itself is shorter than
@@ -34,9 +41,9 @@ def lesion_slice_indices(mask: np.ndarray, max_slices: int = config.MAX_SLICES_P
     non-lesion slices on both ends, clamped to the volume's bounds.
     """
     other_axes = tuple(a for a in range(mask.ndim) if a != config.SLICE_AXIS)
-    z_with_lesion = np.where(mask.sum(axis=other_axes) > 0)[0]
-    if len(z_with_lesion) == 0:
-        z_with_lesion = np.array([40, 50])
+    z_with_lesion = torch.where(mask.sum(dim=other_axes) > 0)[0]
+    if z_with_lesion.numel() == 0:
+        z_with_lesion = torch.tensor([40, 50])
         #raise ValueError("lesion mask contains no positive voxels")
 
     z_min, z_max = int(z_with_lesion.min()), int(z_with_lesion.max())
@@ -65,26 +72,26 @@ def lesion_slice_indices(mask: np.ndarray, max_slices: int = config.MAX_SLICES_P
         z_min = max(z_min, 0)
         z_max = min(z_max, z_size - 1)
 
-    return np.arange(z_min, z_max + 1)
+    return torch.arange(z_min, z_max + 1)
 
 
-def _get_slice(volume: np.ndarray, z: int) -> np.ndarray:
-    return np.take(volume, z, axis=config.SLICE_AXIS)
+def _get_slice(volume: torch.Tensor, z: int) -> torch.Tensor:
+    return volume.select(config.SLICE_AXIS, z)
 
 
-def _crop_bbox_from_mask(mask2d: np.ndarray) -> tuple:
+def _crop_bbox_from_mask(mask2d: torch.Tensor) -> tuple:
     H, W = mask2d.shape
-    rows = np.where(mask2d.any(axis=1))[0]
-    cols = np.where(mask2d.any(axis=0))[0]
+    rows = torch.where(mask2d.any(dim=1))[0]
+    cols = torch.where(mask2d.any(dim=0))[0]
 
-    if len(rows) == 0 or len(cols) == 0:
+    if rows.numel() == 0 or cols.numel() == 0:
         # Defensive fallback: shouldn't happen since z was chosen for having
         # lesion pixels, but guards against interpolation artifacts.
         size = config.MIN_CROP_SIZE_PX
         cy, cx = H / 2, W / 2
     else:
-        r0, r1 = rows.min(), rows.max()
-        c0, c1 = cols.min(), cols.max()
+        r0, r1 = int(rows.min()), int(rows.max())
+        c0, c1 = int(cols.min()), int(cols.max())
         h, w = r1 - r0 + 1, c1 - c0 + 1
         size = max(h, w, config.MIN_CROP_SIZE_PX)
         size = int(round(size * (1 + 2 * config.CROP_MARGIN_FRAC)))
@@ -106,33 +113,37 @@ def _crop_bbox_from_mask(mask2d: np.ndarray) -> tuple:
     return r0n, r1n, c0n, c1n
 
 
-def _resize2d(arr: np.ndarray, out_size: int, order: int) -> np.ndarray:
-    fy, fx = out_size / arr.shape[0], out_size / arr.shape[1]
-    return zoom(arr, (fy, fx), order=order)
+def _resize2d(arr: torch.Tensor, out_size: int, order: int) -> torch.Tensor:
+    mode = "nearest" if order == 0 else "bilinear"
+    kwargs = {} if mode == "nearest" else {"align_corners": False}
+    resized = torch.nn.functional.interpolate(
+        arr[None, None].float(), size=(out_size, out_size), mode=mode, **kwargs,
+    )
+    return resized[0, 0]
 
 
-def _pad_to(arr: np.ndarray, out_size: int, value: float) -> np.ndarray:
+def _pad_to(arr: torch.Tensor, out_size: int, value: float) -> torch.Tensor:
     """Zero-ish (constant-`value`) pad a square array up to out_size, split
     evenly on both sides (extra pixel on the bottom/right if odd)."""
     pad = out_size - arr.shape[0]
     top, left = pad // 2, pad // 2
     bottom, right = pad - top, pad - left
-    return np.pad(arr, ((top, bottom), (left, right)), mode="constant", constant_values=value)
+    return torch.nn.functional.pad(arr, (left, right, top, bottom), mode="constant", value=value)
 
 
-def _window_normalize(slice2d: np.ndarray) -> np.ndarray:
-    clipped = np.clip(slice2d, config.WINDOW_LOW, config.WINDOW_HIGH)
+def _window_normalize(slice2d: torch.Tensor) -> torch.Tensor:
+    clipped = torch.clamp(slice2d, config.WINDOW_LOW, config.WINDOW_HIGH)
     return (clipped - config.WINDOW_LOW) / (config.WINDOW_HIGH - config.WINDOW_LOW)
 
 
-_IMAGENET_MEAN = np.array(config.IMAGENET_MEAN, dtype=np.float32)[:, None, None]
-_IMAGENET_STD = np.array(config.IMAGENET_STD, dtype=np.float32)[:, None, None]
+_IMAGENET_MEAN = torch.tensor(config.IMAGENET_MEAN, dtype=torch.float32)[:, None, None]
+_IMAGENET_STD = torch.tensor(config.IMAGENET_STD, dtype=torch.float32)[:, None, None]
 
 
 def prepare_phase_tensors(
-    volume: np.ndarray,
-    mask: np.ndarray,
-    z_indices: np.ndarray,
+    volume: torch.Tensor,
+    mask: torch.Tensor,
+    z_indices: torch.Tensor,
     augment_params: Optional[dict] = None,
 ):
     """
@@ -143,76 +154,94 @@ def prepare_phase_tensors(
     to the per-phase 3D CNN as a genuine (1, S, H, W) volume rather than S
     independent 2D images.
 
+    `volume`/`mask` are torch.Tensor -- every operation in this function
+    (slicing, cropping, resizing, padding, normalizing, augmenting) runs as
+    a torch op, never round-tripping through numpy. Callers (see
+    build_case_tensors_from_volumes) are responsible for converting the
+    loaded numpy volumes to tensors before calling this.
+
     `augment_params` (from augmentation.sample_augment_params, or None to
     disable) is applied identically to every slice, so it should be sampled
     once per case and passed to every phase's call -- see
-    build_case_tensors's `augment` argument.
+    build_case_tensors's `augment` argument. It's applied to the whole
+    per-phase (S, IMG_SIZE, IMG_SIZE) slice stack in one batched call
+    (see augmentation.apply_geometric_stack) rather than slice by slice.
     """
-    pixel_values, mask_grids, weights, volume_slices = [], [], [], []
+    img_resized_list, mask_resized_list, weights = [], [], []
 
     for z in z_indices:
-        img2d = _get_slice(volume, int(z))
-        mask2d = _get_slice(mask, int(z)) > 0.5
-        img_crop = img2d
-        mask_crop = mask2d
+        z = int(z)
+        img2d = _get_slice(volume, z)
+        mask2d = _get_slice(mask, z) > 0.5
         r0, r1, c0, c1 = _crop_bbox_from_mask(mask2d)
         img_crop = img2d[r0:r1, c0:c1]
-        mask_crop = mask2d[r0:r1, c0:c1].astype(np.float32)
+        mask_crop = mask2d[r0:r1, c0:c1].float()
 
-        img_resized = _resize2d(img_crop, config.IMG_SIZE, order=1)
+        img_resized_list.append(_resize2d(img_crop, config.IMG_SIZE, order=1))
         mask_resized = _resize2d(mask_crop, config.IMG_SIZE, order=1)
-        mask_resized = np.clip(mask_resized, 0.0, 1.0)
+        mask_resized_list.append(torch.clamp(mask_resized, 0.0, 1.0))
 
-        if augment_params is not None:
-            # Same geometric transform for image and mask so they stay
-            # pixel-aligned; fill value is WINDOW_LOW for the image (maps to
-            # 0.0 post-windowing, the same "background" level used for
-            # padding below) and 0.0 (no lesion) for the mask.
-            img_resized = augmentation.apply_geometric(img_resized, augment_params, order=1, cval=config.WINDOW_LOW)
-            mask_resized = augmentation.apply_geometric(mask_resized, augment_params, order=1, cval=0.0)
-            mask_resized = np.clip(mask_resized, 0.0, 1.0)
-            img_resized = augmentation.apply_intensity(img_resized, augment_params)
+        weights.append(mask2d.sum().float())
 
+    img_stack = torch.stack(img_resized_list)
+    mask_stack = torch.stack(mask_resized_list)
+
+    if augment_params is not None:
+        # Same geometric transform for image and mask so they stay
+        # pixel-aligned; fill value is WINDOW_LOW for the image (maps to
+        # 0.0 post-windowing, the same "background" level used for padding
+        # below) and 0.0 (no lesion) for the mask.
+        img_stack, mask_stack = augmentation.apply_geometric_stack(
+            img_stack, mask_stack, augment_params, img_cval=config.WINDOW_LOW,
+        )
+        mask_stack = torch.clamp(mask_stack, 0.0, 1.0)
+        img_stack = augmentation.apply_intensity(img_stack, augment_params)
+
+    pixel_values, mask_grids, volume_slices = [], [], []
+
+    for img_resized, mask_resized in zip(img_stack, mask_stack):
         # Windowed-normalize before padding so the pad value (0.0) means "at
         # or below WINDOW_LOW" -- a well-defined background level -- rather
         # than padding in raw HU space.
-        img_norm = _window_normalize(img_resized).astype(np.float32)
+        img_norm = _window_normalize(img_resized).float()
         volume_slices.append(img_norm)
 
         img_padded = _pad_to(img_norm, config.PADDED_SIZE, value=0.0)
         mask_padded = _pad_to(mask_resized, config.PADDED_SIZE, value=0.0)
 
-        chw = np.repeat(img_padded[None, :, :], 3, axis=0)
+        chw = img_padded[None, :, :].repeat(3, 1, 1)
         chw = (chw - _IMAGENET_MEAN) / _IMAGENET_STD
         pixel_values.append(chw)
 
         block = config.PADDED_SIZE // config.GRID_SIZE
-        grid = mask_padded.reshape(config.GRID_SIZE, block, config.GRID_SIZE, block).mean(axis=(1, 3))
+        grid = mask_padded.reshape(config.GRID_SIZE, block, config.GRID_SIZE, block).mean(dim=(1, 3))
         mask_grids.append(grid > 0.3)
 
-        weights.append(float(mask2d.sum()))
-
-    pixel_values_t = torch.from_numpy(np.stack(pixel_values)).float()
-    mask_grids_t = torch.from_numpy(np.stack(mask_grids)).float()
-    weights_t = torch.tensor(weights, dtype=torch.float32)
-    volume_t = torch.from_numpy(np.stack(volume_slices)).float()
+    pixel_values_t = torch.stack(pixel_values).float()
+    mask_grids_t = torch.stack(mask_grids).float()
+    weights_t = torch.stack(weights).float()
+    volume_t = torch.stack(volume_slices).float()
     return pixel_values_t, mask_grids_t, weights_t, volume_t
 
 
 def load_case_volumes(phase_paths: dict, mask_path: str, label: Optional[str] = None) -> tuple:
     """Loads one case's raw per-phase volumes + lesion mask from disk, all
     resampled to the ART phase's voxel grid. Returns (phase_vols, mask_vol),
-    phase_vols a {phase_name: np.ndarray} dict, mask_vol a bool np.ndarray.
-    This is the loading half of build_case_tensors(), split out so
-    lesion_transplant.py can load a donor/recipient's raw volumes, splice
-    them, and hand the synthesized (phase_vols, mask_vol) to
-    build_case_tensors_from_volumes() instead of re-deriving tensors from a
-    real case's own files.
+    phase_vols a {phase_name: torch.Tensor} dict, mask_vol a bool
+    torch.Tensor -- this is the point where each case's data crosses from
+    raw numpy (nibabel's native format) into tensor land; every function
+    downstream of this one (_resample_to_shape above, and
+    build_case_tensors_from_volumes/prepare_phase_tensors below) works
+    entirely in torch.Tensor. This is the loading half of
+    build_case_tensors(), split out so lesion_transplant.py can load a
+    donor/recipient's raw volumes, splice them, and hand the synthesized
+    (phase_vols, mask_vol) to build_case_tensors_from_volumes() instead of
+    re-deriving tensors from a real case's own files.
 
     `label`: see build_case_tensors().
     """
     if label == config.NO_LESION_LABEL:
-        mask_vol = np.zeros((512, 512, 200), dtype=bool)
+        mask_vol = torch.zeros((512, 512, 200), dtype=torch.bool)
     else:
         mask_vol = load_volume(mask_path) > 0.5
 
@@ -221,7 +250,7 @@ def load_case_volumes(phase_paths: dict, mask_path: str, label: Optional[str] = 
     for phase in config.PHASE_NAMES:
         path = phase_paths.get(phase)
         if not path or not os.path.exists(path):
-            vol = np.zeros(arterial_shape)
+            vol = torch.zeros(arterial_shape)
         else:
             vol = load_volume(path)
         if phase == 'ART':
@@ -233,7 +262,7 @@ def load_case_volumes(phase_paths: dict, mask_path: str, label: Optional[str] = 
 
 def build_case_tensors_from_volumes(
     phase_vols: dict,
-    mask_vol: np.ndarray,
+    mask_vol: torch.Tensor,
     max_slices: int = config.MAX_SLICES_PER_CASE,
     augment: bool = False,
     rng: Optional[np.random.Generator] = None,
@@ -241,8 +270,10 @@ def build_case_tensors_from_volumes(
     """
     The tensor-prep half of build_case_tensors(): z-index selection +
     per-phase crop/resize/window/augment, given already-loaded (and, for a
-    transplanted case, already-spliced) raw volumes. See build_case_tensors()
-    for `augment`/`rng`.
+    transplanted case, already-spliced) torch.Tensor volumes -- see
+    load_case_volumes() and lesion_transplant.transplant_case(), the two
+    producers of phase_vols/mask_vol. See build_case_tensors() for
+    `augment`/`rng`.
     """
     z_indices = lesion_slice_indices(mask_vol, max_slices)
 

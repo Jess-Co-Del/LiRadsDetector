@@ -51,7 +51,7 @@ def plot_case_overlay(case_dir: str, case_id: str, phase: str, ax_row) -> None:
     ct_vol = preprocessing.load_volume(ct_path)
     liver_vol = preprocessing.load_volume(liver_path) > 0.5
     liver_vol = preprocessing._resample_to_shape(liver_vol, ct_vol.shape) > 0.5
-    print(f"{case_id}: liver voxels = {int(liver_vol.sum())} / {liver_vol.size} ({100 * liver_vol.mean():.1f}%)")
+    print(f"{case_id}: liver voxels = {int(liver_vol.sum())} / {liver_vol.numel()} ({100 * liver_vol.float().mean():.1f}%)")
 
     z_indices = _pick_slice_indices(liver_vol, len(ax_row))
     for i, ax in enumerate(ax_row):

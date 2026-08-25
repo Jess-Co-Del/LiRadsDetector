@@ -23,18 +23,19 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+import torch
 from scipy.ndimage import distance_transform_edt
 
 from . import config, preprocessing
 
 
-def _bbox_3d(mask: np.ndarray, margin_frac: float) -> tuple:
+def _bbox_3d(mask: torch.Tensor, margin_frac: float) -> tuple:
     """3D bounding box (as a tuple of (start, stop) pairs, one per axis)
     around mask's positive voxels, expanded by margin_frac of each axis's
     extent on both sides and clamped to mask's shape. Mirrors
     preprocessing._crop_bbox_from_mask, but in 3D and without the
     square/min-size handling that function needs for a 2D model-input crop."""
-    coords = [np.where(mask.any(axis=tuple(a for a in range(mask.ndim) if a != ax)))[0] for ax in range(mask.ndim)]
+    coords = [torch.where(mask.any(dim=tuple(a for a in range(mask.ndim) if a != ax)))[0] for ax in range(mask.ndim)]
     bbox = []
     for ax, c in enumerate(coords):
         lo, hi = int(c.min()), int(c.max())
@@ -45,7 +46,7 @@ def _bbox_3d(mask: np.ndarray, margin_frac: float) -> tuple:
     return tuple(bbox)
 
 
-def extract_lesion_patch(phase_vols: dict, mask_vol: np.ndarray, margin_frac: float = config.TRANSPLANT_MARGIN_FRAC) -> dict:
+def extract_lesion_patch(phase_vols: dict, mask_vol: torch.Tensor, margin_frac: float = config.TRANSPLANT_MARGIN_FRAC) -> dict:
     """Crops a donor case's lesion out of every phase, at a shared 3D
     bounding box (mask's extent + margin_frac padding). Returns
     {"phases": {phase: cropped_vol}, "mask": cropped_bool_mask}. Raises
@@ -60,7 +61,7 @@ def extract_lesion_patch(phase_vols: dict, mask_vol: np.ndarray, margin_frac: fl
     }
 
 
-def _feathered_alpha(mask: np.ndarray, feather_vox: int) -> np.ndarray:
+def _feathered_alpha(mask: torch.Tensor, feather_vox: int) -> torch.Tensor:
     """Soft [0,1] blend weight: exactly 1 for voxels feather_vox/2 or more
     inside the mask, exactly 0 for voxels feather_vox/2 or more outside it,
     and a smooth linear ramp across the boundary in between -- a signed
@@ -70,16 +71,24 @@ def _feathered_alpha(mask: np.ndarray, feather_vox: int) -> np.ndarray:
     few voxels wide) washes out most of its own signal, since blur reduces
     peak amplitude for anything comparable in size to sigma. A distance-
     transform feather instead guarantees any voxel deep enough inside the
-    mask keeps alpha=1 regardless of the lesion's size."""
+    mask keeps alpha=1 regardless of the lesion's size.
+
+    `mask` is a small (already lesion-cropped, see extract_lesion_patch())
+    torch.Tensor; distance_transform_edt has no torch-native equivalent, so
+    it's computed via a local numpy round-trip -- this path only runs at
+    training time (dataset.py's transplant augmentation), where scipy is
+    already a required dependency, so it doesn't affect inference."""
     if feather_vox <= 0:
-        return mask.astype(np.float32)
-    inside_dist = distance_transform_edt(mask)
-    outside_dist = distance_transform_edt(~mask)
-    signed_dist = np.where(mask, inside_dist, -outside_dist)
-    return np.clip(signed_dist / feather_vox + 0.5, 0.0, 1.0).astype(np.float32)
+        return mask.float()
+    mask_np = mask.numpy()
+    inside_dist = distance_transform_edt(mask_np)
+    outside_dist = distance_transform_edt(~mask_np)
+    signed_dist = np.where(mask_np, inside_dist, -outside_dist)
+    alpha = np.clip(signed_dist / feather_vox + 0.5, 0.0, 1.0).astype(np.float32)
+    return torch.from_numpy(alpha)
 
 
-def _fits_within(liver_mask: np.ndarray, center: tuple, patch_shape: tuple) -> bool:
+def _fits_within(liver_mask: torch.Tensor, center: tuple, patch_shape: tuple) -> bool:
     half = tuple(s // 2 for s in patch_shape)
     lo = tuple(c - h for c, h in zip(center, half))
     hi = tuple(l + s for l, s in zip(lo, patch_shape))
@@ -90,7 +99,7 @@ def _fits_within(liver_mask: np.ndarray, center: tuple, patch_shape: tuple) -> b
 
 
 def choose_paste_center(
-    liver_mask: np.ndarray,
+    liver_mask: torch.Tensor,
     patch_shape: tuple,
     rng: np.random.Generator,
     max_attempts: int = config.TRANSPLANT_MAX_PLACEMENT_ATTEMPTS,
@@ -100,7 +109,7 @@ def choose_paste_center(
     never spills past the recipient's real liver boundary. Returns None if
     no valid placement was found in max_attempts tries (e.g. the patch is
     larger than the recipient's liver, or the liver mask is empty)."""
-    liver_voxels = np.argwhere(liver_mask)
+    liver_voxels = torch.argwhere(liver_mask)
     if len(liver_voxels) == 0:
         return None
 
@@ -113,7 +122,7 @@ def choose_paste_center(
 
 def paste_lesion(
     recipient_phase_vols: dict,
-    recipient_mask_vol: np.ndarray,
+    recipient_mask_vol: torch.Tensor,
     patch: dict,
     center: tuple,
     feather_vox: int = config.TRANSPLANT_FEATHER_VOX,
@@ -140,12 +149,12 @@ def paste_lesion(
     new_phase_vols = {}
     for phase, recipient_vol in recipient_phase_vols.items():
         donor_patch = patch["phases"][phase]
-        out = recipient_vol.copy()
+        out = recipient_vol.clone()
         region = out[sl]
         out[sl] = alpha * donor_patch + (1.0 - alpha) * region
         new_phase_vols[phase] = out
 
-    new_mask_vol = np.zeros_like(recipient_mask_vol, dtype=bool)
+    new_mask_vol = torch.zeros_like(recipient_mask_vol, dtype=torch.bool)
     new_mask_vol[sl] = patch["mask"]
     return new_phase_vols, new_mask_vol
 
