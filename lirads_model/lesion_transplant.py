@@ -34,8 +34,16 @@ def _bbox_3d(mask: torch.Tensor, margin_frac: float) -> tuple:
     around mask's positive voxels, expanded by margin_frac of each axis's
     extent on both sides and clamped to mask's shape. Mirrors
     preprocessing._crop_bbox_from_mask, but in 3D and without the
-    square/min-size handling that function needs for a 2D model-input crop."""
-    coords = [torch.where(mask.any(dim=tuple(a for a in range(mask.ndim) if a != ax)))[0] for ax in range(mask.ndim)]
+    square/min-size handling that function needs for a 2D model-input crop.
+
+    Uses `.sum(dim=...) > 0` rather than `.any(dim=...)`: torch's `any`/`all`
+    only accept a single int `dim` on older torch versions (unlike `sum`,
+    which has always accepted a tuple), and this needs to reduce over two
+    axes at once."""
+    coords = [
+        torch.where(mask.sum(dim=tuple(a for a in range(mask.ndim) if a != ax)) > 0)[0]
+        for ax in range(mask.ndim)
+    ]
     bbox = []
     for ax, c in enumerate(coords):
         lo, hi = int(c.min()), int(c.max())
