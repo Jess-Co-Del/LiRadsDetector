@@ -58,6 +58,33 @@ def _find_case_dir(data_root: str, case_id: str) -> str:
         raise FileNotFoundError(f"case directory for {case_id!r} not found under {data_root!r}")
 
 
+# A single top-level knob (train.py's/scripts/profile_train.py's
+# --augment_mode) for which of LiRadsCaseDataset's three independent
+# augmentation strategies are on, instead of three separate flags whose
+# combinations aren't all meaningful: lesion transplant and anatomy-informed
+# augmentation are each layered *on top of* the geometric (spatial) warp --
+# see lesion_transplant.py/config.ANATOMY_* -- so neither is offered with
+# spatial augmentation off. "none" is the eval/test/inference default in all
+# but name; it's spelled out here so it can be requested explicitly too, e.g.
+# for an augmentation ablation run.
+AUGMENT_MODES = {
+    "none": {"augment": False, "transplant": False, "anatomy": False},
+    "spatial": {"augment": True, "transplant": False, "anatomy": False},
+    "spatial+transplant": {"augment": True, "transplant": True, "anatomy": False},
+    "spatial+anatomy": {"augment": True, "transplant": False, "anatomy": True},
+    "all": {"augment": True, "transplant": True, "anatomy": True},
+}
+
+
+def resolve_augment_mode(mode: str) -> dict:
+    """Maps an --augment_mode string to the {augment, transplant, anatomy}
+    kwargs LiRadsCaseDataset expects, e.g.
+    `LiRadsCaseDataset(..., **resolve_augment_mode(args.augment_mode))`."""
+    if mode not in AUGMENT_MODES:
+        raise ValueError(f"unrecognized augment_mode {mode!r} (must be one of {sorted(AUGMENT_MODES)})")
+    return AUGMENT_MODES[mode]
+
+
 class LiRadsCaseDataset(Dataset):
     def __init__(
         self,
@@ -67,6 +94,7 @@ class LiRadsCaseDataset(Dataset):
         case_ids: Optional[Sequence[str]] = None,
         augment: bool = False,
         transplant: bool = False,
+        anatomy: bool = False,
         ordinal_only: bool = False,
     ):
         df = pd.read_csv(metadata_csv)
@@ -98,6 +126,7 @@ class LiRadsCaseDataset(Dataset):
         self.max_slices = max_slices
         self.augment = augment
         self.transplant = transplant
+        self.anatomy = anatomy
         self.ordinal_only = ordinal_only
 
     def __len__(self) -> int:
@@ -114,6 +143,15 @@ class LiRadsCaseDataset(Dataset):
         labeled `label`, since the transplanted lesion is the donor's real,
         correctly-labeled one. Falls back to this case's own real data if no
         recipient has a liver mask yet, or none has room for this lesion.
+
+        self.anatomy independently controls whether a liver mask is ever
+        handed to build_case_tensors_from_volumes at all -- if off, neither
+        path below can trigger the anatomy-informed deform (see
+        config.ANATOMY_AUGMENT_PROB), regardless of self.transplant. A
+        transplanted case's recipient liver mask is loaded either way (see
+        lesion_transplant.transplant_case) since placement itself always
+        needs it; self.anatomy only gates whether it's reused afterward for
+        the deform.
         """
         if self.transplant and label in config.TRANSPLANT_DONOR_LABELS:
             rng = np.random.default_rng()
@@ -122,19 +160,21 @@ class LiRadsCaseDataset(Dataset):
                 if recipient_case_id is not None:
                     try:
                         recipient_dir = _find_case_dir(self.data_root, recipient_case_id)
-                        phase_vols, mask_vol = lesion_transplant.transplant_case(
+                        phase_vols, mask_vol, liver_mask_vol = lesion_transplant.transplant_case(
                             case_dir, case_id, recipient_dir, recipient_case_id, rng,
                         )
                         return preprocessing.build_case_tensors_from_volumes(
                             phase_vols, mask_vol, self.max_slices, augment=self.augment, rng=rng,
+                            liver_mask_vol=liver_mask_vol if self.anatomy else None,
                         )
                     except (FileNotFoundError, ValueError):
                         pass  # no liver mask yet, or no room for this lesion -- fall back below
 
         phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
         mask_path = preprocessing.find_case_mask_path(case_dir)
+        liver_path = preprocessing.find_case_liver_path(case_dir) if self.anatomy else None
         return preprocessing.build_case_tensors(
-            phase_paths, mask_path, self.max_slices, augment=self.augment, label=label,
+            phase_paths, mask_path, self.max_slices, augment=self.augment, label=label, liver_path=liver_path,
         )
 
     def __getitem__(self, idx: int) -> dict:

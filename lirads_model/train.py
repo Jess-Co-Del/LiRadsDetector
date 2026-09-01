@@ -18,7 +18,7 @@ from batchgenerators.dataloading.nondet_multi_threaded_augmenter import NonDetMu
 from . import config
 from .config import print_to_log
 from .backbone import Dinov2SliceEncoder
-from .dataset import LiRadsCaseDataset, collate_cases, label_to_targets
+from .dataset import AUGMENT_MODES, LiRadsCaseDataset, collate_cases, label_to_targets, resolve_augment_mode
 from .losses import CornSoftQWKLoss, SORDLoss
 from .model import LiRadsNet
 from .predict import compute_per_class_metrics, run_inference, run_inference_tta, save_confusion_matrix
@@ -183,8 +183,7 @@ def train(args: argparse.Namespace) -> None:
     #     args.data_root,
     #     args.max_slices,
     #     case_ids=fold["train"],
-    #     augment=args.augment,
-    #     transplant=args.transplant,
+    #     **resolve_augment_mode(args.augment_mode),
     #     ordinal_only=ordinal_only,
     # )
     # val_ds = LiRadsCaseDataset(
@@ -200,8 +199,7 @@ def train(args: argparse.Namespace) -> None:
         args.data_root,
         args.max_slices,
         case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv').case_id.to_list(),
-        augment=args.augment,
-        transplant=args.transplant,
+        **resolve_augment_mode(args.augment_mode),
         ordinal_only=ordinal_only,
     )
     val_ds = LiRadsCaseDataset(
@@ -470,23 +468,23 @@ def main() -> None:
         help="[corn_qwk] weight of the soft-QWK term in L = CORN_loss + qwk_lambda * (1 - soft_QWK)",
     )
     parser.add_argument(
-        "--augment", action=argparse.BooleanOptionalAction, default=True,
-        help="apply random rotation/zoom/flip/intensity augmentation to the train split (--no-augment to disable)",
+        "--augment_mode", choices=sorted(AUGMENT_MODES), default="spatial",
+        help=(
+            "which train-split augmentation strategies to apply, layered in order: 'none' disables all of them; "
+            "'spatial' applies random rotation/zoom/flip/intensity augmentation (augmentation.py) only; "
+            "'spatial+transplant' additionally pastes a donor case's real lesion into a different recipient "
+            "case's liver for config.TRANSPLANT_DONOR_LABELS (LR-1/LR-2/LR-3 by default, see lesion_transplant.py); "
+            "'spatial+anatomy' additionally warps around the case's own liver segmentation "
+            "(augmentation.apply_anatomy_informed_deform, see config.ANATOMY_*); 'all' applies every strategy. "
+            "transplant/anatomy both require scripts/segment_livers.py to have already produced a liver.nii.gz "
+            "for the relevant cases; cases missing one simply fall back to their own real data / skip the deform."
+        ),
     )
     parser.add_argument(
         "--balanced_sampling", action=argparse.BooleanOptionalAction, default=True,
         help=(
             "oversample rare lirads_score classes (e.g. LR-TIV) via a WeightedRandomSampler on the train split, "
             "instead of plain random shuffling (--no-balanced_sampling to disable)"
-        ),
-    )
-    parser.add_argument(
-        "--transplant", action=argparse.BooleanOptionalAction, default=False,
-        help=(
-            "lesion copy-paste augmentation for config.TRANSPLANT_DONOR_LABELS (LR-1/LR-2/LR-3 by default): "
-            "paste a donor case's real lesion into a different recipient case's liver (see lesion_transplant.py). "
-            "Off by default -- requires scripts/segment_livers.py to have already produced a liver.nii.gz for "
-            "recipient cases; cases missing one simply aren't used as recipients."
         ),
     )
     parser.add_argument(

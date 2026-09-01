@@ -189,3 +189,28 @@ TRANSPLANT_MAX_PLACEMENT_ATTEMPTS = 25  # random center draws tried before givin
 # phase for liver segmentation datasets like LiTS); segment_livers.py reads
 # this phase's volume per case.
 LIVER_SEGMENTATION_PHASE = "DEL"
+
+# ── Anatomy-informed augmentation (training only) ────────────────────────────
+# Locally warps around the case's own liver segmentation (the same
+# liver.nii.gz mask lesion_transplant.py uses to constrain paste placement)
+# to simulate physiologically plausible soft-tissue deformation -- capsule
+# bulging/indentation from breathing or adjacent organ distension -- instead
+# of a generic global affine warp. Adapted from batchgenerators'
+# AnatomyInformedTransform ("Anatomy-informed Data Augmentation for Enhanced
+# Prostate Cancer Detection", MICCAI 2023:
+# https://github.com/MIC-DKFZ/anatomy_informed_DA), applied to the full 3D
+# volume+mask before z-index slicing (see
+# preprocessing.build_case_tensors_from_volumes) rather than the 2D per-slice
+# stack the other geometric transforms use, since it needs the liver's real
+# 3D shape to compute a physically plausible deformation field. Skipped for
+# any case without a liver.nii.gz on disk yet (see augmentation.py).
+ANATOMY_AUGMENT_PROB = 0.25                # per-case probability the deformation is applied at all
+ANATOMY_DILATION_RANGE_VOX = (-15.0, 15.0)  # signed warp magnitude in voxels; negative compresses the liver inward, positive distends it outward
+# In-plane / slice-thickness voxel spacing ratio, needed to scale the warp's
+# blur/gradient along the slice axis correctly. Volumes here aren't
+# affine-tracked past preprocessing.load_volume (which drops nibabel's
+# affine), so this is a fixed approximation rather than computed per case --
+# tune it to this dataset's typical CT protocol if slices are markedly
+# thicker/thinner than in-plane pixels.
+ANATOMY_SPACING_RATIO = 1.0
+ANATOMY_BLUR = 16                          # gaussian kernel (voxels) smoothing the organ gradient field

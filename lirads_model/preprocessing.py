@@ -224,12 +224,14 @@ def prepare_phase_tensors(
     return pixel_values_t, mask_grids_t, weights_t, volume_t
 
 
-def load_case_volumes(phase_paths: dict, mask_path: str, label: Optional[str] = None) -> tuple:
+def load_case_volumes(
+    phase_paths: dict, mask_path: str, label: Optional[str] = None, liver_path: Optional[str] = None,
+) -> tuple:
     """Loads one case's raw per-phase volumes + lesion mask from disk, all
-    resampled to the ART phase's voxel grid. Returns (phase_vols, mask_vol),
-    phase_vols a {phase_name: torch.Tensor} dict, mask_vol a bool
-    torch.Tensor -- this is the point where each case's data crosses from
-    raw numpy (nibabel's native format) into tensor land; every function
+    resampled to the ART phase's voxel grid. Returns (phase_vols, mask_vol,
+    liver_mask_vol), phase_vols a {phase_name: torch.Tensor} dict, mask_vol a
+    bool torch.Tensor -- this is the point where each case's data crosses
+    from raw numpy (nibabel's native format) into tensor land; every function
     downstream of this one (_resample_to_shape above, and
     build_case_tensors_from_volumes/prepare_phase_tensors below) works
     entirely in torch.Tensor. This is the loading half of
@@ -239,6 +241,13 @@ def load_case_volumes(phase_paths: dict, mask_path: str, label: Optional[str] = 
     re-deriving tensors from a real case's own files.
 
     `label`: see build_case_tensors().
+
+    `liver_path`: optional path to a liver.nii.gz (see
+    find_case_liver_path()) to load + resample alongside the rest, for
+    augmentation.apply_anatomy_informed_deform. liver_mask_vol is None when
+    `liver_path` is None or the file doesn't exist yet (segment_livers.py
+    hasn't run on this case) -- callers should treat that as "skip anatomy
+    augmentation for this case" rather than an error.
     """
     if label == config.NO_LESION_LABEL:
         mask_vol = torch.zeros((512, 512, 200), dtype=torch.bool)
@@ -257,7 +266,12 @@ def load_case_volumes(phase_paths: dict, mask_path: str, label: Optional[str] = 
             arterial_shape = vol.shape
         phase_vols[phase] = _resample_to_shape(vol, arterial_shape)
     mask_vol = _resample_to_shape(mask_vol, arterial_shape)
-    return phase_vols, mask_vol
+
+    liver_mask_vol = None
+    if liver_path and os.path.exists(liver_path):
+        liver_mask_vol = _resample_to_shape(load_volume(liver_path) > 0.5, arterial_shape)
+
+    return phase_vols, mask_vol, liver_mask_vol
 
 
 def build_case_tensors_from_volumes(
@@ -266,6 +280,7 @@ def build_case_tensors_from_volumes(
     max_slices: int = config.MAX_SLICES_PER_CASE,
     augment: bool = False,
     rng: Optional[np.random.Generator] = None,
+    liver_mask_vol: Optional[torch.Tensor] = None,
 ) -> dict:
     """
     The tensor-prep half of build_case_tensors(): z-index selection +
@@ -274,12 +289,25 @@ def build_case_tensors_from_volumes(
     load_case_volumes() and lesion_transplant.transplant_case(), the two
     producers of phase_vols/mask_vol. See build_case_tensors() for
     `augment`/`rng`.
+
+    `liver_mask_vol`: optional full-resolution liver mask (see
+    load_case_volumes()/lesion_transplant.transplant_case()), same shape as
+    mask_vol. When given and `augment` is True, with probability
+    config.ANATOMY_AUGMENT_PROB the whole case is warped around a random
+    local liver deformation (augmentation.apply_anatomy_informed_deform)
+    *before* z-index selection, so the lesion-centered slice window below is
+    chosen from the deformed volume. Left None (or augment=False) to skip
+    this entirely -- e.g. no liver.nii.gz yet for this case, or eval/test.
     """
+    if augment:
+        rng = rng if rng is not None else np.random.default_rng()
+        if liver_mask_vol is not None and rng.random() < config.ANATOMY_AUGMENT_PROB:
+            phase_vols, mask_vol = augmentation.apply_anatomy_informed_deform(phase_vols, mask_vol, liver_mask_vol, rng)
+
     z_indices = lesion_slice_indices(mask_vol, max_slices)
 
     augment_params = None
     if augment:
-        rng = rng if rng is not None else np.random.default_rng()
         augment_params = augmentation.sample_augment_params(rng)
 
     return {
@@ -295,6 +323,7 @@ def build_case_tensors(
     augment: bool = False,
     rng: Optional[np.random.Generator] = None,
     label: Optional[str] = None,
+    liver_path: Optional[str] = None,
 ) -> dict:
     """
     phase_paths: {"ART": path_or_None, "VEN": ..., "DEL": ..., "DRY": ...}.
@@ -315,9 +344,15 @@ def build_case_tensors(
     challenge's task spec), the mask is loaded normally and any failure
     propagates: a missing/corrupt mask on a real lesion case is a data bug,
     not something to silently paper over as an empty mask.
+
+    `liver_path`: see load_case_volumes()/build_case_tensors_from_volumes();
+    only meaningful when `augment` is True, so callers that don't augment
+    (eval/test/inference) can just leave it None and skip the extra load.
     """
-    phase_vols, mask_vol = load_case_volumes(phase_paths, mask_path, label=label)
-    return build_case_tensors_from_volumes(phase_vols, mask_vol, max_slices, augment=augment, rng=rng)
+    phase_vols, mask_vol, liver_mask_vol = load_case_volumes(phase_paths, mask_path, label=label, liver_path=liver_path)
+    return build_case_tensors_from_volumes(
+        phase_vols, mask_vol, max_slices, augment=augment, rng=rng, liver_mask_vol=liver_mask_vol,
+    )
 
 
 def find_case_phase_paths(case_dir: str, case_id: str) -> dict:

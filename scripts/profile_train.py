@@ -55,7 +55,7 @@ sys.path.insert(0, _REPO_ROOT)
 from lirads_model import config  # noqa: E402
 from lirads_model.backbone import Dinov2SliceEncoder  # noqa: E402
 from lirads_model.config import print_to_log  # noqa: E402
-from lirads_model.dataset import LiRadsCaseDataset, collate_cases, label_to_targets  # noqa: E402
+from lirads_model.dataset import AUGMENT_MODES, LiRadsCaseDataset, collate_cases, label_to_targets, resolve_augment_mode  # noqa: E402
 from lirads_model.model import LiRadsNet  # noqa: E402
 from lirads_model.splits import load_fold  # noqa: E402
 from lirads_model.train import (  # noqa: E402
@@ -101,9 +101,8 @@ def main() -> None:
     parser.add_argument("--head_mode", choices=["dual", "ordinal"], default="dual")
     parser.add_argument("--ordinal_loss", choices=["ce", "sord", "corn_qwk"], default="ce")
     parser.add_argument("--qwk_lambda", type=float, default=1.0)
-    parser.add_argument("--augment", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--augment_mode", choices=sorted(AUGMENT_MODES), default="spatial")
     parser.add_argument("--balanced_sampling", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--transplant", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -140,7 +139,7 @@ def main() -> None:
 
     train_ds = LiRadsCaseDataset(
         args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["train"],
-        augment=args.augment, transplant=args.transplant, ordinal_only=ordinal_only,
+        **resolve_augment_mode(args.augment_mode), ordinal_only=ordinal_only,
     )
     train_loader = InfiniteDataLoader(
         DataLoader(

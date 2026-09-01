@@ -11,4 +11,5 @@ scikit-learn>=1.3
 matplotlib>=3.7
 transformers>=4.43
 huggingface_hub>=0.23
-batchgeneratorsv2>=0.3  # training-time data augmentation (see lirads_model/augmentation.py)
+batchgeneratorsv2>=0.3.2  # training-time data augmentation (see lirads_model/augmentation.py); needs SpatialTransform's mode_image/padding_value_image kwargs, added after 0.3.0
+batchgenerators>=0.25  # anatomy-informed augmentation (augmentation.apply_anatomy_informed_deform); only a transitive dep of batchgeneratorsv2/nnunetv2 otherwise, pinned explicitly since we import from it directly

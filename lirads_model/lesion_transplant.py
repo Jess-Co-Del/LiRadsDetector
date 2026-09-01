@@ -192,9 +192,14 @@ def transplant_case(
     """
     Loads the donor's real lesion and the recipient's raw volumes + liver
     mask from disk, and pastes the former into the latter at a random spot
-    inside the recipient's liver. Returns (phase_vols, mask_vol) in the same
-    shape preprocessing.load_case_volumes() would for a real case, ready for
-    preprocessing.build_case_tensors_from_volumes().
+    inside the recipient's liver. Returns (phase_vols, mask_vol, liver_mask),
+    phase_vols/mask_vol in the same shape preprocessing.load_case_volumes()
+    would for a real case, ready for
+    preprocessing.build_case_tensors_from_volumes(); liver_mask is the
+    recipient's own liver segmentation (unchanged by the paste, since
+    paste_lesion() only touches image/lesion-mask voxels), handed straight
+    through so callers can also anatomy-informed-augment this synthesized
+    case around the same liver.
 
     Raises FileNotFoundError if the recipient has no liver.nii.gz yet (see
     scripts/segment_livers.py) and ValueError if no valid placement was
@@ -204,18 +209,17 @@ def transplant_case(
     """
     donor_phase_paths = preprocessing.find_case_phase_paths(donor_case_dir, donor_case_id)
     donor_mask_path = preprocessing.find_case_mask_path(donor_case_dir)
-    donor_phase_vols, donor_mask_vol = preprocessing.load_case_volumes(donor_phase_paths, donor_mask_path)
+    donor_phase_vols, donor_mask_vol, _ = preprocessing.load_case_volumes(donor_phase_paths, donor_mask_path)
     patch = extract_lesion_patch(donor_phase_vols, donor_mask_vol)
 
     recipient_phase_paths = preprocessing.find_case_phase_paths(recipient_case_dir, recipient_case_id)
     recipient_mask_path = preprocessing.find_case_mask_path(recipient_case_dir)
-    recipient_phase_vols, recipient_mask_vol = preprocessing.load_case_volumes(
-        recipient_phase_paths, recipient_mask_path, label=config.NO_LESION_LABEL,
-    )
-
     liver_path = preprocessing.find_case_liver_path(recipient_case_dir)
-    liver_mask = preprocessing.load_volume(liver_path) > 0.5
-    liver_mask = preprocessing._resample_to_shape(liver_mask, recipient_mask_vol.shape) > 0.5
+    recipient_phase_vols, recipient_mask_vol, liver_mask = preprocessing.load_case_volumes(
+        recipient_phase_paths, recipient_mask_path, label=config.NO_LESION_LABEL, liver_path=liver_path,
+    )
+    if liver_mask is None:
+        raise FileNotFoundError(f"no liver.nii.gz found for recipient {recipient_case_id!r} at {liver_path!r}")
 
     patch_shape = tuple(s + 2 * config.TRANSPLANT_LIVER_ERODE_MARGIN_VOX for s in patch["mask"].shape)
     center = choose_paste_center(liver_mask, patch_shape, rng)
@@ -225,4 +229,5 @@ def transplant_case(
             f"inside recipient {recipient_case_id!r}'s liver"
         )
 
-    return paste_lesion(recipient_phase_vols, recipient_mask_vol, patch, center)
+    new_phase_vols, new_mask_vol = paste_lesion(recipient_phase_vols, recipient_mask_vol, patch, center)
+    return new_phase_vols, new_mask_vol, liver_mask
