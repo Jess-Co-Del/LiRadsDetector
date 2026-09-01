@@ -252,7 +252,10 @@ def load_case_volumes(
     if label == config.NO_LESION_LABEL:
         mask_vol = torch.zeros((512, 512, 200), dtype=torch.bool)
     else:
-        mask_vol = load_volume(mask_path) > 0.5
+        try:
+            mask_vol = load_volume(mask_path) > 0.5
+        except:  # During inference I do not have labels, so a no lesion does have the mask_volume.
+            mask_vol = torch.zeros((512, 512, 200), dtype=torch.bool)
 
     phase_vols = {}
     arterial_shape = None
