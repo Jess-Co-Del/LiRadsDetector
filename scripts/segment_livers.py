@@ -54,7 +54,7 @@ def main() -> None:
         "--model_dir", required=True,
         help="nnUNet_results/<Dataset>/<Trainer>__<Plans>__<configuration> folder for the trained liver model",
     )
-    parser.add_argument("--folds", type=int, nargs="+", default=[0, 1, 2, 3, 4], help="cross-val folds to ensemble")
+    parser.add_argument("--folds", type=str, nargs="+", default="all", help="cross-val folds to ensemble")
     parser.add_argument("--checkpoint_name", default="checkpoint_final.pth")
     parser.add_argument(
         "--phase", default=config.LIVER_SEGMENTATION_PHASE, choices=config.PHASE_NAMES,
