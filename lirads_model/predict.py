@@ -15,6 +15,7 @@ import argparse
 import os
 import sys
 import tempfile
+import time
 from collections import Counter
 from typing import List, Optional, Sequence
 
@@ -177,12 +178,17 @@ def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) ->
     """
     model.eval()
     rows = []
+    total_elapsed = 0.0
     for batch in loader:
+        start = time.perf_counter()
         logits_cat, logits_ord = model(batch["phase_data"], batch["clinical_features"])
+        total_elapsed += time.perf_counter() - start
         for i, case_id in enumerate(batch["case_ids"]):
             cat_i = logits_cat[i].cpu() if logits_cat is not None else None
             label = decode_prediction(cat_i, logits_ord[i].cpu(), model.ordinal_head_type)
             rows.append({"case_id": case_id, "prediction": label})
+    if rows:
+        print_to_log(f"mean inference time per case: {total_elapsed / len(rows):.3f}s ({len(rows)} cases)")
     return pd.DataFrame(rows)
 
 
@@ -198,11 +204,16 @@ def run_inference_tta(model: LiRadsNet, dataset: LiRadsCaseDataset, device: torc
     """
     model.eval()
     rows = []
+    total_elapsed = 0.0
     for _, row in dataset.df.iterrows():
         case_id = str(row["case_id"])
         case_dir = _find_case_dir(dataset.data_root, case_id)
+        start = time.perf_counter()
         logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, dataset.max_slices, tta_views)
+        total_elapsed += time.perf_counter() - start
         rows.append({"case_id": case_id, "prediction": decode_prediction(logits_cat, logits_ord, model.ordinal_head_type)})
+    if rows:
+        print_to_log(f"mean inference time per case: {total_elapsed / len(rows):.3f}s ({len(rows)} cases)")
     return pd.DataFrame(rows)
 
 
