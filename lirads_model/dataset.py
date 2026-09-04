@@ -19,20 +19,20 @@ from torch.utils.data import Dataset
 from . import config, lesion_transplant, preprocessing
 
 
-def label_to_targets(label: str):
+def label_to_targets(label: str, cat_names: Sequence[str] = config.CAT_NAMES):
     """Returns (cat_idx, ord_idx). ord_idx is -1 when the label isn't ordinal.
-    cat_idx follows config.CAT_NAMES's order: ordinal=0, LR-M=1, LR-TIV=2,
-    No lesion=3."""
+    cat_idx is `label`'s (or, for an ordinal label, "ordinal"'s) position in
+    `cat_names` -- normally config.CAT_NAMES's order (ordinal=0, LR-M=1,
+    LR-TIV=2, No lesion=3), but a caller training a narrower category head
+    (e.g. train.py's --no-include_no_lesion, see LiRadsCaseDataset's
+    cat_names) passes that same narrower list here so cat_idx lines up with
+    the model's actual cat_head width."""
     label = label.strip()
     if label in config.ORDINAL_LABELS:
-        return 0, config.ORDINAL_LABELS.index(label)
-    if label == "LR-M":
-        return 1, 0
-    if label == "LR-TIV":
-        return 2, 0
-    if label == config.NO_LESION_LABEL:
-        return 3, 0
-    raise ValueError(f"unrecognized LI-RADS label: {label!r}")
+        return cat_names.index("ordinal"), config.ORDINAL_LABELS.index(label)
+    if label in cat_names:
+        return cat_names.index(label), 0
+    raise ValueError(f"unrecognized LI-RADS label for this model's category head {list(cat_names)!r}: {label!r}")
 
 
 def encode_clinical_features(row: pd.Series) -> torch.Tensor:
@@ -96,6 +96,7 @@ class LiRadsCaseDataset(Dataset):
         transplant: bool = False,
         anatomy: bool = False,
         ordinal_only: bool = False,
+        cat_names: Sequence[str] = config.CAT_NAMES,
     ):
         df = pd.read_csv(metadata_csv)
         df.columns = df.columns.str.strip().str.lower()
@@ -121,6 +122,13 @@ class LiRadsCaseDataset(Dataset):
             # narrowing of an existing split rather than a "requested case
             # missing" error).
             df = df[df["lirads_score"].str.strip().isin(config.ORDINAL_LABELS)]
+        elif config.NO_LESION_LABEL not in cat_names:
+            # cat_names is narrower than the full category set (train.py's
+            # --no-include_no_lesion): config.NO_LESION_LABEL cases have no
+            # category left to route them through, so they're dropped from
+            # the split -- the same silent-narrowing-of-an-existing-split
+            # behavior as the ordinal_only filter above.
+            df = df[df["lirads_score"].str.strip() != config.NO_LESION_LABEL]
         self.df = df.reset_index(drop=True)
         self.data_root = data_root
         self.max_slices = max_slices
@@ -128,6 +136,7 @@ class LiRadsCaseDataset(Dataset):
         self.transplant = transplant
         self.anatomy = anatomy
         self.ordinal_only = ordinal_only
+        self.cat_names = list(cat_names)
 
     def __len__(self) -> int:
         return len(self.df)
@@ -185,7 +194,7 @@ class LiRadsCaseDataset(Dataset):
         label = str(row["lirads_score"]).strip()
         phase_data = self._build_phase_data(row, case_id, case_dir, label)
 
-        cat_idx, ord_idx = label_to_targets(label)
+        cat_idx, ord_idx = label_to_targets(label, self.cat_names)
         clinical_features = encode_clinical_features(row)
         return {
             "case_id": case_id, "phase_data": phase_data, "cat_idx": cat_idx, "ord_idx": ord_idx,

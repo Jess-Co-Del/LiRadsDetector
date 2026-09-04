@@ -2,7 +2,7 @@
 LiRadsNet: mask-guided-pooled DINOv2 features -> dual classification head
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -59,6 +59,7 @@ class LiRadsNet(nn.Module):
         use_clinical: bool = True,
         use_cat_head: bool = True,
         ordinal_head_type: str = "softmax",
+        cat_names: Sequence[str] = config.CAT_NAMES,
     ):
         super().__init__()
         if ordinal_head_type not in ("softmax", "corn"):
@@ -71,6 +72,14 @@ class LiRadsNet(nn.Module):
         self.use_clinical = use_clinical
         self.use_cat_head = use_cat_head
         self.ordinal_head_type = ordinal_head_type
+        # Normally config.CAT_NAMES (4-way: ordinal/LR-M/LR-TIV/No lesion),
+        # but a caller training on a narrower category set (e.g. train.py's
+        # --no-include_no_lesion, which drops "No lesion") passes a shorter
+        # list here so cat_head is sized to match and decode_prediction()
+        # can map cat_head's argmax back to the right name -- see
+        # dataset.LiRadsCaseDataset's cat_names/label_to_targets, which must
+        # agree with whatever's passed here for a given training run.
+        self.cat_names = list(cat_names)
 
         for p in self.backbone.parameters():
             p.requires_grad = False
@@ -127,7 +136,7 @@ class LiRadsNet(nn.Module):
         # (see config.ORDINAL_LABELS and LiRadsCaseDataset's ordinal_only) --
         # forward() then returns None in its place, and decode_prediction()
         # skips the category gate and reads the ordinal head directly.
-        self.cat_head = nn.Linear(hidden2, len(config.CAT_NAMES)) if self.use_cat_head else None
+        self.cat_head = nn.Linear(hidden2, len(self.cat_names)) if self.use_cat_head else None
         # "corn" sizes the ordinal head to num_classes-1 conditional-threshold
         # logits instead of a plain num_classes-way softmax -- see
         # losses.CornSoftQWKLoss/corn_loss and decode_prediction() below.
@@ -194,18 +203,22 @@ class LiRadsNet(nn.Module):
 
 def decode_prediction(
     logits_cat: Optional[torch.Tensor], logits_ord: torch.Tensor, ordinal_head_type: str = "softmax",
+    cat_names: Sequence[str] = config.CAT_NAMES,
 ) -> str:
-    """logits_cat: (4,) or None, logits_ord: (5,) for ordinal_head_type=
-    "softmax" or (4,) for "corn" (must match the LiRadsNet that produced it
-    -- see its ordinal_head_type) -> one of config.VALID_LABELS or
-    config.NO_LESION_LABEL (the latter must be remapped before it's ever
-    submitted to the actual challenge, which doesn't score it). logits_cat is
-    None for a single-head, ordinal-only model (LiRadsNet(use_cat_head=False))
-    -- there's no category gate to consult, so the ordinal head's decoded
-    rank is returned directly."""
+    """logits_cat: (len(cat_names),) or None, logits_ord: (5,) for
+    ordinal_head_type="softmax" or (4,) for "corn" (must match the LiRadsNet
+    that produced it -- see its ordinal_head_type) -> one of
+    config.VALID_LABELS or config.NO_LESION_LABEL (the latter must be
+    remapped before it's ever submitted to the actual challenge, which
+    doesn't score it). logits_cat is None for a single-head, ordinal-only
+    model (LiRadsNet(use_cat_head=False)) -- there's no category gate to
+    consult, so the ordinal head's decoded rank is returned directly.
+    `cat_names` must be the same list the producing LiRadsNet was built with
+    (its `.cat_names` attribute) -- pass config.CAT_NAMES only for a model
+    trained with the default 4-way category head."""
     if logits_cat is not None:
         cat_idx = int(torch.argmax(logits_cat).item())
-        cat_name = config.CAT_NAMES[cat_idx]
+        cat_name = cat_names[cat_idx]
         if cat_name != "ordinal":
             return cat_name
     if ordinal_head_type == "corn":

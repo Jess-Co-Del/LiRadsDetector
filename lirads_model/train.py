@@ -138,12 +138,24 @@ def train(args: argparse.Namespace) -> None:
 
     ordinal_only = args.head_mode == "ordinal"
 
+    # cat_names is the category head's actual label set, in cat_head's
+    # output order -- normally config.CAT_NAMES (4-way), narrowed to drop
+    # "No lesion" when --no-include_no_lesion. Threaded through
+    # LiRadsCaseDataset (label_to_targets) and LiRadsNet (cat_head's width)
+    # below so both agree on what each cat_idx means; see model.LiRadsNet's
+    # cat_names docstring.
+    cat_names = (
+        list(config.CAT_NAMES) if args.include_no_lesion
+        else [c for c in config.CAT_NAMES if c != config.NO_LESION_LABEL]
+    )
+
     # --resume: peek at an existing checkpoint at args.out *before*
     # building the dataset/model below, since its architecture flags
-    # (use_cnn/use_clinical/use_cat_head) are frozen into its saved weights'
-    # shapes and must override whatever --use_cnn/--use_clinical/--head_mode
-    # were passed this time -- resuming with a different architecture would
-    # make model.load_state_dict() below fail (or silently mismatch).
+    # (use_cnn/use_clinical/use_cat_head/cat_names) are frozen into its
+    # saved weights' shapes and must override whatever
+    # --use_cnn/--use_clinical/--head_mode/--include_no_lesion were passed
+    # this time -- resuming with a different architecture would make
+    # model.load_state_dict() below fail (or silently mismatch).
     resume_checkpoint = None
     if args.resume:
         if os.path.exists(args.out):
@@ -152,15 +164,18 @@ def train(args: argparse.Namespace) -> None:
             ckpt_use_cnn = resume_checkpoint.get("use_cnn", args.use_cnn)
             ckpt_use_clinical = resume_checkpoint.get("use_clinical", args.use_clinical)
             ckpt_use_cat_head = resume_checkpoint.get("use_cat_head", not ordinal_only)
-            if (ckpt_use_cnn, ckpt_use_clinical, ckpt_use_cat_head) != (args.use_cnn, args.use_clinical, not ordinal_only):
+            ckpt_cat_names = resume_checkpoint.get("cat_names", list(config.CAT_NAMES))
+            if (ckpt_use_cnn, ckpt_use_clinical, ckpt_use_cat_head, ckpt_cat_names) != (args.use_cnn, args.use_clinical, not ordinal_only, cat_names):
                 print_to_log(
-                    "  --resume: overriding --use_cnn/--use_clinical/--head_mode with the checkpoint's own "
-                    f"architecture (use_cnn={ckpt_use_cnn}, use_clinical={ckpt_use_clinical}, "
-                    f"use_cat_head={ckpt_use_cat_head}) -- a model's architecture can't change mid-training.",
+                    "  --resume: overriding --use_cnn/--use_clinical/--head_mode/--include_no_lesion with the "
+                    f"checkpoint's own architecture (use_cnn={ckpt_use_cnn}, use_clinical={ckpt_use_clinical}, "
+                    f"use_cat_head={ckpt_use_cat_head}, cat_names={ckpt_cat_names}) -- a model's architecture "
+                    "can't change mid-training.",
                     log_path,
                 )
             args.use_cnn, args.use_clinical = ckpt_use_cnn, ckpt_use_clinical
             ordinal_only = not ckpt_use_cat_head
+            cat_names = ckpt_cat_names
         else:
             print_to_log(f"--resume: no checkpoint found at {args.out}; starting fresh.", log_path)
 
@@ -201,6 +216,7 @@ def train(args: argparse.Namespace) -> None:
         case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv').case_id.to_list(),
         **resolve_augment_mode(args.augment_mode),
         ordinal_only=ordinal_only,
+        cat_names=cat_names,
     )
     val_ds = LiRadsCaseDataset(
         '/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv',
@@ -208,6 +224,7 @@ def train(args: argparse.Namespace) -> None:
         args.max_slices,
         case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list(),
         ordinal_only=ordinal_only,
+        cat_names=cat_names,
     )
 
     train_loader = InfiniteDataLoader(
@@ -228,20 +245,22 @@ def train(args: argparse.Namespace) -> None:
     backbone = Dinov2SliceEncoder.from_pretrained()
     model = LiRadsNet(
         backbone, use_cnn=args.use_cnn, use_clinical=args.use_clinical, use_cat_head=not ordinal_only,
-        ordinal_head_type=ordinal_head_type,
+        ordinal_head_type=ordinal_head_type, cat_names=cat_names,
     ).to(device)
 
-    cat_idxs, ord_idxs = zip(*(label_to_targets(str(l)) for l in train_ds.df["lirads_score"]))
+    cat_idxs, ord_idxs = zip(*(label_to_targets(str(l), cat_names) for l in train_ds.df["lirads_score"]))
     ord_only = [o for o in ord_idxs if o >= 0]
     ord_counts = {i: ord_only.count(i) for i in range(len(config.ORDINAL_LABELS))}
     ord_criterion = build_ordinal_criterion(args, ord_counts, device)
     print_to_log(f"Ordinal head loss: {args.ordinal_loss}", log_path)
+    if not ordinal_only:
+        print_to_log(f"Category head labels ({len(cat_names)}-way): {cat_names}", log_path)
 
     if ordinal_only:
         cat_criterion = None
     else:
-        cat_counts = {i: cat_idxs.count(i) for i in range(len(config.CAT_NAMES))}
-        cat_criterion = nn.CrossEntropyLoss(weight=compute_class_weights(cat_counts, len(config.CAT_NAMES)).to(device))
+        cat_counts = {i: cat_idxs.count(i) for i in range(len(cat_names))}
+        cat_criterion = nn.CrossEntropyLoss(weight=compute_class_weights(cat_counts, len(cat_names)).to(device))
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
@@ -360,6 +379,7 @@ def train(args: argparse.Namespace) -> None:
                     "use_clinical": args.use_clinical,
                     "use_cat_head": not ordinal_only,
                     "ordinal_head_type": ordinal_head_type,
+                    "cat_names": cat_names,
                 },
                 args.out,
             )
@@ -369,6 +389,7 @@ def train(args: argparse.Namespace) -> None:
 
     test_ds = LiRadsCaseDataset(
         args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["test"], ordinal_only=ordinal_only,
+        cat_names=cat_names,
     )
     if os.path.exists(args.out):
         checkpoint = torch.load(args.out, map_location=device)
@@ -439,6 +460,17 @@ def main() -> None:
             "ordinal target alone -- no category head at all, and LR-M/LR-TIV/No lesion cases are dropped "
             "from train/val/test (see LiRadsCaseDataset's ordinal_only), since they have no meaningful "
             "ordinal target and there's no category head left to route them through."
+        ),
+    )
+    parser.add_argument(
+        "--include_no_lesion", action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "include config.NO_LESION_LABEL ('No lesion') cases in train/val/test and its own slot in the "
+            "category head (default). --no-include_no_lesion drops those cases from every split and shrinks "
+            "the category head from 4-way (ordinal/LR-M/LR-TIV/No lesion) to 3-way (ordinal/LR-M/LR-TIV) -- "
+            "see dataset.LiRadsCaseDataset's cat_names. Only meaningful with --head_mode dual: --head_mode "
+            "ordinal already drops every special class (LR-M/LR-TIV/No lesion), this one included, since "
+            "there's no category head left for any of them to route through."
         ),
     )
     parser.add_argument(

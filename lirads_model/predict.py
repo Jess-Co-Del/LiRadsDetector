@@ -58,9 +58,10 @@ def load_model(checkpoint_path: str, device: torch.device, backbone_source: str 
     use_clinical = checkpoint.get("use_clinical", True)
     use_cat_head = checkpoint.get("use_cat_head", True)
     ordinal_head_type = checkpoint.get("ordinal_head_type", "softmax")
+    cat_names = checkpoint.get("cat_names", config.CAT_NAMES)
     model = LiRadsNet(
         backbone, use_cnn=use_cnn, use_clinical=use_clinical, use_cat_head=use_cat_head,
-        ordinal_head_type=ordinal_head_type,
+        ordinal_head_type=ordinal_head_type, cat_names=cat_names,
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -122,7 +123,7 @@ def _forward_with_tta(
     logits_cat = logits_cat[0].cpu() if logits_cat is not None else None
     logits_ord = logits_ord[0].cpu()
 
-    is_ordinal = logits_cat is None or config.CAT_NAMES[int(torch.argmax(logits_cat).item())] == "ordinal"
+    is_ordinal = logits_cat is None or model.cat_names[int(torch.argmax(logits_cat).item())] == "ordinal"
     if tta_views > 0 and is_ordinal:
         rng = rng if rng is not None else np.random.default_rng()
         ord_logits_sum = logits_ord.clone()
@@ -147,7 +148,7 @@ def predict_case(
     tta_views: int = config.TTA_VIEWS,
 ) -> str:
     logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views)
-    label = decode_prediction(logits_cat, logits_ord, model.ordinal_head_type)
+    label = decode_prediction(logits_cat, logits_ord, model.ordinal_head_type, model.cat_names)
     return _remap_for_submission(label)
 
 
@@ -166,7 +167,7 @@ def predict_case_ensemble(
     labels = []
     for model in models:
         logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views)
-        labels.append(decode_prediction(logits_cat, logits_ord, model.ordinal_head_type))
+        labels.append(decode_prediction(logits_cat, logits_ord, model.ordinal_head_type, model.cat_names))
     return _remap_for_submission(majority_vote(labels))
 
 
@@ -185,7 +186,7 @@ def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) ->
         total_elapsed += time.perf_counter() - start
         for i, case_id in enumerate(batch["case_ids"]):
             cat_i = logits_cat[i].cpu() if logits_cat is not None else None
-            label = decode_prediction(cat_i, logits_ord[i].cpu(), model.ordinal_head_type)
+            label = decode_prediction(cat_i, logits_ord[i].cpu(), model.ordinal_head_type, model.cat_names)
             rows.append({"case_id": case_id, "prediction": label})
     if rows:
         print_to_log(f"mean inference time per case: {total_elapsed / len(rows):.3f}s ({len(rows)} cases)")
@@ -211,7 +212,7 @@ def run_inference_tta(model: LiRadsNet, dataset: LiRadsCaseDataset, device: torc
         start = time.perf_counter()
         logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, dataset.max_slices, tta_views)
         total_elapsed += time.perf_counter() - start
-        rows.append({"case_id": case_id, "prediction": decode_prediction(logits_cat, logits_ord, model.ordinal_head_type)})
+        rows.append({"case_id": case_id, "prediction": decode_prediction(logits_cat, logits_ord, model.ordinal_head_type, model.cat_names)})
     if rows:
         print_to_log(f"mean inference time per case: {total_elapsed / len(rows):.3f}s ({len(rows)} cases)")
     return pd.DataFrame(rows)
