@@ -213,4 +213,4 @@ ANATOMY_DILATION_RANGE_VOX = (-15.0, 15.0)  # signed warp magnitude in voxels; n
 # tune it to this dataset's typical CT protocol if slices are markedly
 # thicker/thinner than in-plane pixels.
 ANATOMY_SPACING_RATIO = 1.0
-ANATOMY_BLUR = 16                          # gaussian kernel (voxels) smoothing the lesion gradient field
+ANATOMY_BLUR = 4                          # gaussian kernel (voxels) smoothing the lesion gradient field

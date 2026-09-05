@@ -56,7 +56,6 @@ def _shared_inplane_bbox(masks: list, margin_frac: float = 0.6) -> tuple:
     the larger side. Shared by the before/after panels so the lesion is
     framed identically and the deformation -- not a shifting crop -- is what
     moves on screen."""
-    inplane_axes = tuple(a for a in range(3) if a != config.SLICE_AXIS)
     combined = np.zeros(
         tuple(s for a, s in enumerate(masks[0].shape) if a != config.SLICE_AXIS), dtype=bool
     )
@@ -93,13 +92,15 @@ def plot_case(case_dir: str, case_id: str, phase: str, n_slices: int, rng: np.ra
     if phase not in phase_vols:
         raise ValueError(f"{case_id}: phase {phase!r} not among {list(phase_vols)}")
 
+    # apply_anatomy_informed_deform's only rng draw is the warp magnitude
+    # (rng.uniform(*ANATOMY_DILATION_RANGE_VOX)); seed a dedicated generator
+    # so we can report the exact magnitude it will use.
     lo, hi = config.ANATOMY_DILATION_RANGE_VOX
-    dil = rng.uniform(lo, hi)  # peek at the magnitude apply_anatomy_informed_deform will draw next
-    rng_for_deform = np.random.default_rng()
-    rng_for_deform.uniform = lambda a, b: dil  # pin it so the printed number matches what's drawn
+    deform_seed = int(rng.integers(2**31))
+    dil = float(np.random.default_rng(deform_seed).uniform(lo, hi))
 
     new_phase_vols, new_mask_vol = augmentation.apply_anatomy_informed_deform(
-        {p: v.clone() for p, v in phase_vols.items()}, mask_vol.clone(), rng_for_deform,
+        {p: v.clone() for p, v in phase_vols.items()}, mask_vol.clone(), np.random.default_rng(deform_seed),
     )
 
     before_m = mask_vol.numpy().astype(bool)
@@ -151,6 +152,7 @@ def main() -> None:
     parser.add_argument("--phase", default="ART", choices=config.PHASE_NAMES)
     parser.add_argument("--n_slices", type=int, default=5, help="slices per case, evenly spread across the lesion z-extent")
     parser.add_argument("--dilation", type=float, help="force this warp magnitude (voxels) instead of sampling")
+    parser.add_argument("--blur", type=float, help="override config.ANATOMY_BLUR (gaussian kernel smoothing the lesion gradient field)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", default="anatomy_deform_check.png")
     args = parser.parse_args()
@@ -166,6 +168,8 @@ def main() -> None:
 
     if args.dilation is not None:
         config.ANATOMY_DILATION_RANGE_VOX = (args.dilation, args.dilation)
+    if args.blur is not None:
+        config.ANATOMY_BLUR = args.blur
 
     import matplotlib
     matplotlib.use("Agg")
