@@ -244,10 +244,11 @@ def load_case_volumes(
 
     `liver_path`: optional path to a liver.nii.gz (see
     find_case_liver_path()) to load + resample alongside the rest, for
-    augmentation.apply_anatomy_informed_deform. liver_mask_vol is None when
-    `liver_path` is None or the file doesn't exist yet (segment_livers.py
-    hasn't run on this case) -- callers should treat that as "skip anatomy
-    augmentation for this case" rather than an error.
+    lesion_transplant.py's paste-placement constraint. liver_mask_vol is None
+    when `liver_path` is None or the file doesn't exist yet
+    (segment_livers.py hasn't run on this case) -- callers that need it (only
+    lesion_transplant.transplant_case) should treat that as "this case can't
+    be a transplant recipient" rather than an error.
     """
     if label == config.NO_LESION_LABEL:
         mask_vol = torch.zeros((512, 512, 200), dtype=torch.bool)
@@ -283,7 +284,7 @@ def build_case_tensors_from_volumes(
     max_slices: int = config.MAX_SLICES_PER_CASE,
     augment: bool = False,
     rng: Optional[np.random.Generator] = None,
-    liver_mask_vol: Optional[torch.Tensor] = None,
+    anatomy: bool = False,
 ) -> dict:
     """
     The tensor-prep half of build_case_tensors(): z-index selection +
@@ -293,19 +294,18 @@ def build_case_tensors_from_volumes(
     producers of phase_vols/mask_vol. See build_case_tensors() for
     `augment`/`rng`.
 
-    `liver_mask_vol`: optional full-resolution liver mask (see
-    load_case_volumes()/lesion_transplant.transplant_case()), same shape as
-    mask_vol. When given and `augment` is True, with probability
+    `anatomy`: when True and `augment` is True, with probability
     config.ANATOMY_AUGMENT_PROB the whole case is warped around a random
-    local liver deformation (augmentation.apply_anatomy_informed_deform)
-    *before* z-index selection, so the lesion-centered slice window below is
-    chosen from the deformed volume. Left None (or augment=False) to skip
-    this entirely -- e.g. no liver.nii.gz yet for this case, or eval/test.
+    local deformation of its own lesion
+    (augmentation.apply_anatomy_informed_deform) *before* z-index selection,
+    so the lesion-centered slice window below is chosen from the deformed
+    volume. Left False (or augment=False) to skip this entirely -- e.g.
+    eval/test, or an --augment_mode without anatomy.
     """
     if augment:
         rng = rng if rng is not None else np.random.default_rng()
-        if liver_mask_vol is not None and rng.random() < config.ANATOMY_AUGMENT_PROB:
-            phase_vols, mask_vol = augmentation.apply_anatomy_informed_deform(phase_vols, mask_vol, liver_mask_vol, rng)
+        if anatomy and rng.random() < config.ANATOMY_AUGMENT_PROB:
+            phase_vols, mask_vol = augmentation.apply_anatomy_informed_deform(phase_vols, mask_vol, rng)
 
     z_indices = lesion_slice_indices(mask_vol, max_slices)
 
@@ -326,7 +326,7 @@ def build_case_tensors(
     augment: bool = False,
     rng: Optional[np.random.Generator] = None,
     label: Optional[str] = None,
-    liver_path: Optional[str] = None,
+    anatomy: bool = False,
 ) -> dict:
     """
     phase_paths: {"ART": path_or_None, "VEN": ..., "DEL": ..., "DRY": ...}.
@@ -348,13 +348,13 @@ def build_case_tensors(
     propagates: a missing/corrupt mask on a real lesion case is a data bug,
     not something to silently paper over as an empty mask.
 
-    `liver_path`: see load_case_volumes()/build_case_tensors_from_volumes();
-    only meaningful when `augment` is True, so callers that don't augment
-    (eval/test/inference) can just leave it None and skip the extra load.
+    `anatomy`: see build_case_tensors_from_volumes(); only meaningful when
+    `augment` is True, so callers that don't augment (eval/test/inference)
+    can just leave it False.
     """
-    phase_vols, mask_vol, liver_mask_vol = load_case_volumes(phase_paths, mask_path, label=label, liver_path=liver_path)
+    phase_vols, mask_vol, _ = load_case_volumes(phase_paths, mask_path, label=label)
     return build_case_tensors_from_volumes(
-        phase_vols, mask_vol, max_slices, augment=augment, rng=rng, liver_mask_vol=liver_mask_vol,
+        phase_vols, mask_vol, max_slices, augment=augment, rng=rng, anatomy=anatomy,
     )
 
 

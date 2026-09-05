@@ -153,14 +153,12 @@ class LiRadsCaseDataset(Dataset):
         correctly-labeled one. Falls back to this case's own real data if no
         recipient has a liver mask yet, or none has room for this lesion.
 
-        self.anatomy independently controls whether a liver mask is ever
-        handed to build_case_tensors_from_volumes at all -- if off, neither
-        path below can trigger the anatomy-informed deform (see
-        config.ANATOMY_AUGMENT_PROB), regardless of self.transplant. A
-        transplanted case's recipient liver mask is loaded either way (see
-        lesion_transplant.transplant_case) since placement itself always
-        needs it; self.anatomy only gates whether it's reused afterward for
-        the deform.
+        self.anatomy independently controls whether either path below may
+        trigger the anatomy-informed deform (a random local warp of the
+        case's own lesion, see config.ANATOMY_AUGMENT_PROB and
+        augmentation.apply_anatomy_informed_deform), regardless of
+        self.transplant. It no longer needs a liver mask -- the deformation
+        field is computed from the lesion segmentation itself.
         """
         if self.transplant and label in config.TRANSPLANT_DONOR_LABELS:
             rng = np.random.default_rng()
@@ -169,21 +167,20 @@ class LiRadsCaseDataset(Dataset):
                 if recipient_case_id is not None:
                     try:
                         recipient_dir = _find_case_dir(self.data_root, recipient_case_id)
-                        phase_vols, mask_vol, liver_mask_vol = lesion_transplant.transplant_case(
+                        phase_vols, mask_vol, _ = lesion_transplant.transplant_case(
                             case_dir, case_id, recipient_dir, recipient_case_id, rng,
                         )
                         return preprocessing.build_case_tensors_from_volumes(
                             phase_vols, mask_vol, self.max_slices, augment=self.augment, rng=rng,
-                            liver_mask_vol=liver_mask_vol if self.anatomy else None,
+                            anatomy=self.anatomy,
                         )
                     except (FileNotFoundError, ValueError):
                         pass  # no liver mask yet, or no room for this lesion -- fall back below
 
         phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
         mask_path = preprocessing.find_case_mask_path(case_dir)
-        liver_path = preprocessing.find_case_liver_path(case_dir) if self.anatomy else None
         return preprocessing.build_case_tensors(
-            phase_paths, mask_path, self.max_slices, augment=self.augment, label=label, liver_path=liver_path,
+            phase_paths, mask_path, self.max_slices, augment=self.augment, label=label, anatomy=self.anatomy,
         )
 
     def __getitem__(self, idx: int) -> dict:

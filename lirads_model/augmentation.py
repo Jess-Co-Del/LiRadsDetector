@@ -30,7 +30,7 @@ internal RNG calls never influence the result.
 A third transform, `apply_anatomy_informed_deform`, lives here too: unlike
 the two above it runs on the full 3D volume (before z-index slicing) and
 uses batchgenerators v1's AnatomyInformedTransform machinery to warp around
-the case's own liver segmentation instead of a generic affine. See its own
+the case's own lesion segmentation instead of a generic affine. See its own
 docstring and config.ANATOMY_* for details.
 """
 
@@ -41,35 +41,44 @@ from . import config
 
 
 def apply_anatomy_informed_deform(
-    phase_vols: dict, mask_vol: torch.Tensor, liver_mask_vol: torch.Tensor, rng: np.random.Generator,
+    phase_vols: dict, mask_vol: torch.Tensor, rng: np.random.Generator,
 ) -> tuple:
     """
     Warps every phase volume + the lesion mask around a random local
-    distension/compression of the recipient's own liver (config.ANATOMY_*),
-    so the lesion comes out a plausible new shape/position relative to the
-    liver boundary rather than a copy of its original one. Caller decides
-    *whether* to call this (see build_case_tensors_from_volumes, gated by
-    config.ANATOMY_AUGMENT_PROB) -- every call here actually deforms.
+    distension/compression of the case's own lesion (config.ANATOMY_*), so
+    the lesion comes out a plausible new shape/size rather than a copy of its
+    original one. Caller decides *whether* to call this (see
+    build_case_tensors_from_volumes, gated by config.ANATOMY_AUGMENT_PROB) --
+    every call here actually deforms.
 
-    phase_vols/mask_vol/liver_mask_vol are the full-resolution, un-sliced 3D
-    volumes (config.SLICE_AXIS-order, i.e. depth last) -- same shape this
-    module's z-index selection consumes -- since the warp needs the liver's
-    real 3D shape, not a single 2D slice stack like apply_geometric_stack.
+    phase_vols/mask_vol are the full-resolution, un-sliced 3D volumes
+    (config.SLICE_AXIS-order, i.e. depth last) -- same shape this module's
+    z-index selection consumes -- since the warp needs the lesion's real 3D
+    shape, not a single 2D slice stack like apply_geometric_stack.
 
     Implemented via batchgenerators' augment_anatomy_informed (numpy/scipy;
-    no torch-native equivalent), so this round-trips phase_vols/mask_vol/
-    liver_mask_vol through numpy -- fine since it's training-only and
-    batchgenerators is already a required dependency (see augmentation.py's
-    module docstring for the same rationale re: batchgeneratorsv2). Unlike
-    apply_geometric_stack, this one full-resolution 3D call (not S independent
-    2D ones) is the more expensive of this module's two geometric warps, so
-    ANATOMY_AUGMENT_PROB should stay modest.
+    no torch-native equivalent), so this round-trips phase_vols/mask_vol
+    through numpy -- fine since it's training-only and batchgenerators is
+    already a required dependency (see augmentation.py's module docstring for
+    the same rationale re: batchgeneratorsv2). Unlike apply_geometric_stack,
+    this one full-resolution 3D call (not S independent 2D ones) is the more
+    expensive of this module's two geometric warps, so ANATOMY_AUGMENT_PROB
+    should stay modest.
 
-    dil_magnitude/active_organs are drawn from `rng` up front and handed to
-    augment_anatomy_informed as a fixed range (low == high) / precomputed
-    gate, rather than letting it call the *global* np.random itself -- see
-    this module's docstring for why relying on the global RNG is unsafe with
-    DataLoader workers.
+    dil_magnitude is drawn from `rng` up front and handed to
+    augment_anatomy_informed as a fixed range (low == high), rather than
+    letting it call the *global* np.random itself -- see this module's
+    docstring for why relying on the global RNG is unsafe with DataLoader
+    workers.
+
+    The lesion is painted into the single `seg` array at value 2, i.e. as
+    augment_anatomy_informed's "organ 0" (its organ masks live at value
+    organ_idx + 2): the deformation gradient field is computed from
+    (seg == 2), so the local warp distends/compresses the lesion boundary
+    itself. max_annotation_value=2 keeps that label alive through the
+    library's internal ignore_anatomy() call (which drops anything above
+    max_annotation_value before resampling), so the warped (seg > 0) mask
+    below is the deformed lesion.
     """
     from batchgenerators.augmentations.spatial_transformations import augment_anatomy_informed
 
@@ -80,15 +89,7 @@ def apply_anatomy_informed_deform(
     # depth-last (config.SLICE_AXIS == 2), so permute in and back out.
     data = torch.stack([phase_vols[p] for p in phases]).permute(0, 3, 1, 2).contiguous().numpy().astype(np.float32)
     seg = np.zeros(mask_vol.permute(2, 0, 1).shape, dtype=np.uint8)
-    seg[liver_mask_vol.permute(2, 0, 1).numpy()] = 2  # organ_idx 0 -> value organ_idx + 2
-    # Lesion painted last so it always wins where it overlaps the liver label
-    # -- meaning the organ mask augment_anatomy_informed computes the
-    # deformation field from (seg == 2) has a lesion-shaped hole in it. For a
-    # small lesion inside a much larger, heavily blurred (config.ANATOMY_BLUR)
-    # liver mask this is negligible; it's a limitation of the underlying
-    # library's single seg array taking on both roles (organ-to-deform-around
-    # and annotation-to-preserve), not fixable without forking it.
-    seg[mask_vol.permute(2, 0, 1).numpy()] = 1
+    seg[mask_vol.permute(2, 0, 1).numpy()] = 2  # organ_idx 0 -> value organ_idx + 2; the lesion is what we deform around
 
     dil_magnitude = float(rng.uniform(*config.ANATOMY_DILATION_RANGE_VOX))
     data, seg = augment_anatomy_informed(
@@ -100,7 +101,7 @@ def apply_anatomy_informed_deform(
         spacing_ratio=config.ANATOMY_SPACING_RATIO,
         blur=config.ANATOMY_BLUR,
         anisotropy_safety=True,
-        max_annotation_value=1,  # only the lesion (1) survives in seg; the liver label (2) was scaffolding
+        max_annotation_value=2,  # keep the lesion label (2) through the library's ignore_anatomy() drop
         replace_value=0,
     )
 

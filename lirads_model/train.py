@@ -506,10 +506,10 @@ def main() -> None:
             "'spatial' applies random rotation/zoom/flip/intensity augmentation (augmentation.py) only; "
             "'spatial+transplant' additionally pastes a donor case's real lesion into a different recipient "
             "case's liver for config.TRANSPLANT_DONOR_LABELS (LR-1/LR-2/LR-3 by default, see lesion_transplant.py); "
-            "'spatial+anatomy' additionally warps around the case's own liver segmentation "
-            "(augmentation.apply_anatomy_informed_deform, see config.ANATOMY_*); 'all' applies every strategy. "
-            "transplant/anatomy both require scripts/segment_livers.py to have already produced a liver.nii.gz "
-            "for the relevant cases; cases missing one simply fall back to their own real data / skip the deform."
+            "'spatial+anatomy' additionally warps each case around a random local deformation of its own lesion "
+            "segmentation (augmentation.apply_anatomy_informed_deform, see config.ANATOMY_*); 'all' applies every strategy. "
+            "transplant requires scripts/segment_livers.py to have already produced a liver.nii.gz for the "
+            "relevant cases; cases missing one simply fall back to their own real data."
         ),
     )
     parser.add_argument(
