@@ -193,39 +193,41 @@ def train(args: argparse.Namespace) -> None:
         and resume_checkpoint.get("ordinal_head_type", "softmax") != ordinal_head_type
     )
 
-    # train_ds = LiRadsCaseDataset(
-    #     args.metadata_csv,
-    #     args.data_root,
-    #     args.max_slices,
-    #     case_ids=fold["train"],
-    #     **resolve_augment_mode(args.augment_mode),
-    #     ordinal_only=ordinal_only,
-    # )
-    # val_ds = LiRadsCaseDataset(
-    #     args.metadata_csv,
-    #     args.data_root,
-    #     args.max_slices,
-    #     case_ids=fold["val"],
-    #     ordinal_only=ordinal_only,
-    # )
-
     train_ds = LiRadsCaseDataset(
         args.metadata_csv,
         args.data_root,
         args.max_slices,
-        case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv').case_id.to_list(),
-        **resolve_augment_mode(args.augment_mode),
+        case_ids=fold["train"],
+       **resolve_augment_mode(args.augment_mode),
         ordinal_only=ordinal_only,
         cat_names=cat_names,
     )
     val_ds = LiRadsCaseDataset(
-        '/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv',
+        args.metadata_csv,
         args.data_root,
         args.max_slices,
-        case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list(),
+        case_ids=fold["val"],
         ordinal_only=ordinal_only,
         cat_names=cat_names,
     )
+
+    # train_ds = LiRadsCaseDataset(
+    #     args.metadata_csv,
+    #     args.data_root,
+    #     args.max_slices,
+    #     case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv').case_id.to_list(),
+    #     **resolve_augment_mode(args.augment_mode),
+    #     ordinal_only=ordinal_only,
+    #     cat_names=cat_names,
+    # )
+    # val_ds = LiRadsCaseDataset(
+    #     '/leonardo/home/userexternal/jcondess/LiRadsDetector/train_metadata.csv',
+    #     args.data_root,
+    #     args.max_slices,
+    #     case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list(),
+    #     ordinal_only=ordinal_only,
+    #     cat_names=cat_names,
+    # )
 
     train_loader = InfiniteDataLoader(
         DataLoader(
@@ -307,7 +309,7 @@ def train(args: argparse.Namespace) -> None:
     for epoch in range(start_epoch + 1, start_epoch + args.epochs + 1):
         print_to_log('', log_path)
         print_to_log(f"Epoch {epoch}.", log_path)
-        print_to_log(f"Current learning rate: {np.round(optimizer.param_groups[0]['lr'], decimals=5)}", log_path)
+        print_to_log(f"Current learning rate: {np.round(optimizer.param_groups[0]['lr'], decimals=8)}", log_path)
         model.train()
         model.backbone.eval()  # frozen backbone: never let dropout/drop-path move it
 
@@ -532,7 +534,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_iterations_per_epoch", type=int, default=10)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument(
         "--lr_scheduler", choices=["none", "cosine", "step", "plateau"], default="none",
@@ -544,9 +546,9 @@ def main() -> None:
             "improved for --lr_patience epochs."
         ),
     )
-    parser.add_argument("--lr_min", type=float, default=0.0, help="[cosine] learning rate at the end of the schedule")
+    parser.add_argument("--lr_min", type=float, default=0.00000001, help="[cosine] learning rate at the end of the schedule")
     parser.add_argument("--lr_step_size", type=int, default=10, help="[step] epochs between each decay")
-    parser.add_argument("--lr_gamma", type=float, default=0.1, help="[step/plateau] multiplicative decay factor")
+    parser.add_argument("--lr_gamma", type=float, default=0.00001, help="[step/plateau] multiplicative decay factor")
     parser.add_argument(
         "--lr_patience", type=int, default=3,
         help="[plateau] epochs with no val final_score improvement before decaying",

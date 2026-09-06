@@ -53,7 +53,7 @@ CAT_NAMES = ["ordinal", "LR-M", "LR-TIV", "No lesion"]
 FALLBACK_LABEL = "LR-3"
 
 # ── CT phases ────────────────────────────────────────────────────────────────
-PHASE_NAMES = ["ART", "VEN", "DEL"]  # , "DRY"
+PHASE_NAMES = ["ART", "VEN", "DEL", "DRY"]  # , 
 
 # Axis in the NIfTI array (as returned by nibabel's get_fdata()) that indexes
 # axial slices. AMPLIFAI volumes are harmonized/resampled to a consistent
