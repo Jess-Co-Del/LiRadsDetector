@@ -9,6 +9,19 @@ split (majority-voted across checkpoints when more than one is given):
       --splits_json ./data/splits.json \
       --fold 0 \
       --score
+
+By default the test split's clinical/tabular features (aphe/washout/capsule/
+max_diameter_mm) come straight from --metadata_csv's own ground-truth
+columns, same as training -- the "factual" run. Add --clinical_checkpoint
+(one or more lirads_model.train_clinical.py checkpoints) to instead run
+model.ClinicalPredictorNet over the same images and substitute *its*
+predictions for those columns before predicting -- the "inferred" run,
+matching what submission/run.py actually sees (the real challenge input
+never supplies clinical metadata; see config's "Clinical feature
+prediction" section). Run the CLI twice, with and without
+--clinical_checkpoint, to compare the two directly; the inferred run's
+output files get a distinct name (see --out) so neither overwrites the
+other.
 """
 
 import argparse
@@ -28,8 +41,9 @@ from torch.utils.data import DataLoader
 from . import config, preprocessing
 from .config import print_to_log
 from .backbone import Dinov2SliceEncoder
-from .dataset import LiRadsCaseDataset, _find_case_dir, collate_cases
+from .dataset import LiRadsCaseDataset, _find_case_dir, collate_cases, encode_clinical_features
 from .model import LiRadsNet, decode_prediction
+from .predict_clinical import generate_metadata_csv, load_clinical_models
 from .splits import fold_tagged_path, load_fold
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -98,6 +112,7 @@ def _forward_with_tta(
     case_id: str,
     max_slices: int,
     tta_views: int,
+    clinical_features: Optional[torch.Tensor] = None,
     rng: Optional[np.random.Generator] = None,
 ):
     """
@@ -115,12 +130,22 @@ def _forward_with_tta(
     (5,) CPU tensor for a "softmax" ordinal head or (4,) for a "corn" one
     (see model.LiRadsNet's ordinal_head_type), the caller must decode it
     with that same model's ordinal_head_type (decode_prediction's third arg).
+
+    `clinical_features`: this case's (1, config.CLINICAL_FEATURE_DIM) tabular
+    feature row (dataset.encode_clinical_features), reused unchanged for
+    every view, augmentation only perturbs the images. Must be supplied
+    whenever the model was trained with the clinical branch
+    (model.LiRadsNet's use_clinical) and the features are available, or the
+    model falls back to its `missing_clinical_embed`, which train.py never
+    exercises and so never trains. None only when they genuinely aren't
+    available (e.g. submission/run.py, where the challenge supplies images
+    and a mask but no metadata).
     """
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
 
     phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, max_slices)
-    logits_cat, logits_ord = model([phase_data])
+    logits_cat, logits_ord = model([phase_data], clinical_features)
     print("Lever pred:", case_id, logits_cat, logits_ord)
     logits_cat = logits_cat[0].cpu() if logits_cat is not None else None
     logits_ord = logits_ord[0].cpu()
@@ -133,8 +158,9 @@ def _forward_with_tta(
             aug_phase_data = preprocessing.build_case_tensors(
                 phase_paths, mask_path, max_slices, augment=True, rng=rng,
             )
-            aug_logits_cat, aug_logits_ord = model([aug_phase_data])
+            aug_logits_cat, aug_logits_ord = model([aug_phase_data], clinical_features)
             print("augmented pred:", aug_logits_cat, aug_logits_ord)
+
             ord_logits_sum += aug_logits_ord[0].cpu()
         logits_ord = ord_logits_sum / (tta_views + 1)
 
@@ -149,8 +175,9 @@ def predict_case(
     device: torch.device,
     max_slices: int = config.MAX_SLICES_PER_CASE,
     tta_views: int = config.TTA_VIEWS,
+    clinical_features: Optional[torch.Tensor] = None,
 ) -> str:
-    logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views)
+    logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views, clinical_features)
     label = decode_prediction(logits_cat, logits_ord, model.ordinal_head_type, model.cat_names)
     return _remap_for_submission(label)
 
@@ -163,13 +190,14 @@ def predict_case_ensemble(
     device: torch.device,
     max_slices: int = config.MAX_SLICES_PER_CASE,
     tta_views: int = config.TTA_VIEWS,
+    clinical_features: Optional[torch.Tensor] = None,
 ) -> str:
     """Runs every model in `models` on the same case (each with its own TTA
     pass, see _forward_with_tta) and majority-votes over their decoded
     predictions. With a single model this is equivalent to predict_case()."""
     labels = []
     for model in models:
-        logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views)
+        logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views, clinical_features)
         labels.append(decode_prediction(logits_cat, logits_ord, model.ordinal_head_type, model.cat_names))
     return _remap_for_submission(majority_vote(labels))
 
@@ -212,8 +240,14 @@ def run_inference_tta(model: LiRadsNet, dataset: LiRadsCaseDataset, device: torc
     for _, row in dataset.df.iterrows():
         case_id = str(row["case_id"])
         case_dir = _find_case_dir(dataset.data_root, case_id)
+        # Same clinical row run_inference() gets through collate_cases, without
+        # it this path would silently fall back to LiRadsNet's untrained
+        # missing_clinical_embed and score far worse than the batched path.
+        clinical_features = encode_clinical_features(row).unsqueeze(0)
         start = time.perf_counter()
-        logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, dataset.max_slices, tta_views)
+        logits_cat, logits_ord = _forward_with_tta(
+            model, case_dir, case_id, dataset.max_slices, tta_views, clinical_features,
+        )
         total_elapsed += time.perf_counter() - start
         rows.append({"case_id": case_id, "prediction": decode_prediction(logits_cat, logits_ord, model.ordinal_head_type, model.cat_names)})
     if rows:
@@ -266,6 +300,44 @@ def compute_per_class_metrics(gt_labels, pred_labels) -> pd.DataFrame:
     })
 
 
+_GENERATED_CLINICAL_COLS = ["aphe"] + config.CLINICAL_BINARY_FEATURES + ["max_diameter_mm"]
+
+
+def override_clinical_columns(df: pd.DataFrame, data_root: str, clinical_checkpoint: Sequence[str], device: torch.device, backbone_source: str = "local") -> pd.DataFrame:
+    """Returns a copy of `df` (a LiRadsCaseDataset.df-shaped frame: needs a
+    case_id column, plus whatever else the caller already has) with its
+    aphe/washout/capsule/max_diameter_mm columns replaced by
+    model.ClinicalPredictorNet's own predictions for each row's case_id --
+    the same image-only path submission/run.py takes, run here instead over
+    an evaluation split so its effect on scored predictions can be compared
+    directly against the ground-truth-clinical run (see this module's
+    docstring). Every other column (lirads_score included) is left alone.
+
+    A case_id the generator couldn't produce a row for (see
+    predict_clinical.generate_metadata_csv) falls back to the same "no
+    clinical info available" representation LiRadsNet's clinical branch
+    already has for a missing case -- NaN aphe (-> encode_clinical_features's
+    "Unknown"), 0 for every binary flag, 0mm diameter -- never the case's
+    real ground-truth values, which would defeat the point of this
+    comparison."""
+    clinical_models = load_clinical_models(clinical_checkpoint, device, backbone_source)
+    case_ids = df["case_id"].astype(str).tolist()
+    with tempfile.TemporaryDirectory() as tmp:
+        generated = generate_metadata_csv(clinical_models, case_ids, data_root, os.path.join(tmp, "generated_metadata.csv"))
+    del clinical_models
+
+    generated = generated.set_index(generated["case_id"].astype(str))
+    missing = [c for c in case_ids if c not in generated.index]
+    if missing:
+        print_to_log(f"  --clinical_checkpoint: {len(missing)}/{len(case_ids)} case(s) fell back to 'no clinical info' (generation failed): {missing[:5]}...")
+
+    df = df.copy()
+    for col in _GENERATED_CLINICAL_COLS:
+        default = 0.0 if col != "aphe" else np.nan
+        df[col] = [generated[col].get(cid, default) for cid in case_ids]
+    return df
+
+
 def predict_fold_test_set(
     checkpoint_paths: Sequence[str],
     data_root: str,
@@ -278,6 +350,7 @@ def predict_fold_test_set(
     num_workers: int = 4,
     backbone_source: str = "local",
     tta_views: int = 0,
+    clinical_checkpoint: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     """
     Runs every model in `checkpoint_paths` over the `test` split of `fold`
@@ -285,6 +358,13 @@ def predict_fold_test_set(
     With more than one checkpoint, each model's decoded predictions are
     majority-voted per case. `tta_views > 0` switches to the per-case
     run_inference_tta() path (see its docstring for why it can't batch).
+
+    `clinical_checkpoint`: when given, one or more train_clinical.py
+    checkpoints whose image-only predictions replace the test split's
+    ground-truth clinical columns before prediction (see
+    override_clinical_columns) -- the "inferred" run described in this
+    module's docstring. None (the default) uses --metadata_csv's own
+    ground-truth clinical columns unchanged, same as training.
     """
     if isinstance(checkpoint_paths, str):
         checkpoint_paths = [checkpoint_paths]
@@ -292,6 +372,12 @@ def predict_fold_test_set(
     test_case_ids = load_fold(splits_json, fold)["test"]
 
     test_ds = LiRadsCaseDataset(metadata_csv, data_root, max_slices, case_ids=test_case_ids)
+
+    if clinical_checkpoint:
+        test_ds.df = override_clinical_columns(
+            test_ds.df, data_root, clinical_checkpoint,
+            device, backbone_source
+        )
 
     per_model_preds = []
     if tta_views > 0:
@@ -337,12 +423,24 @@ def main() -> None:
             "by predict_case/predict_case_ensemble at submission time)"
         ),
     )
+    parser.add_argument(
+        "--clinical_checkpoint", nargs="+", default=None,
+        help=(
+            "one or more train_clinical.py checkpoints; when given, the test split's aphe/washout/"
+            "capsule/max_diameter_mm columns are replaced by ClinicalPredictorNet's own image-only "
+            "predictions before predicting (the 'inferred' run -- see this module's docstring), "
+            "instead of --metadata_csv's ground-truth clinical columns (the default 'factual' run). "
+            "Output filenames get a distinct '_clinical_inferred' tag so the two runs don't overwrite "
+            "each other."
+        ),
+    )
     args = parser.parse_args()
+    clinical_tag = "_clinical_inferred" if args.clinical_checkpoint else ""
     if len(args.checkpoint) == 1:
-        default_stem = os.path.splitext(args.checkpoint[0])[0] + "_test_predictions.csv"
+        default_stem = os.path.splitext(args.checkpoint[0])[0] + f"_test_predictions{clinical_tag}.csv"
     else:
         ckpt_dir = os.path.dirname(os.path.abspath(args.checkpoint[0]))
-        default_stem = os.path.join(ckpt_dir, f"ensemble_of_{len(args.checkpoint)}_test_predictions.csv")
+        default_stem = os.path.join(ckpt_dir, f"ensemble_of_{len(args.checkpoint)}_test_predictions{clinical_tag}.csv")
     out_path = fold_tagged_path(args.out or default_stem, args.fold)
     out_dir = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(out_dir, exist_ok=True)
@@ -357,6 +455,7 @@ def main() -> None:
         max_slices=args.max_slices, batch_size=args.batch_size, num_workers=args.num_workers,
         tta_views=args.tta_views,
         backbone_source=args.backbone_source,
+        clinical_checkpoint=args.clinical_checkpoint,
     )
 
     preds.to_csv(default_stem, index=False)

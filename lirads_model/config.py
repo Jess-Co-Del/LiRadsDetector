@@ -123,6 +123,23 @@ CLINICAL_DIAMETER_SCALE_MM = 290  # MAX at 281.9
 CLINICAL_FEATURE_DIM = len(APHE_CATEGORIES) + len(CLINICAL_BINARY_FEATURES) + 1  # 9 (+1 for scaled max_diameter_mm)
 CLINICAL_EMBED_DIM = 64
 
+# ── Clinical feature prediction (image-only side model) ──────────────────────
+# model.ClinicalPredictorNet (trained by train_clinical.py, run by
+# predict_clinical.py) predicts encode_clinical_features's 8 non-diameter
+# dims straight from the CT images, so submission/run.py can synthesize a
+# full clinical row for LiRadsNet's clinical branch even though the real
+# submission input never supplies one directly (case_id + images + mask
+# only -- see amplifai-codabench/SUBMISSION_GUIDE.md). max_diameter_mm, the
+# 9th dim, isn't predicted by any model -- it's computed deterministically
+# from the lesion mask instead (see preprocessing.compute_max_diameter_mm).
+#
+# "Unknown" in APHE_CATEGORIES exists only as encode_clinical_features's
+# placeholder for a *missing ground-truth label* (train_metadata.csv rows
+# with a blank aphe cell) -- it isn't a visual finding, so it's excluded
+# from ClinicalPredictorNet's own output space: the model always commits to
+# one of the 3 real categories.
+APHE_PREDICTABLE_CATEGORIES = [c for c in APHE_CATEGORIES if c != "Unknown"]
+
 # ── Per-phase 3D-CNN volume encoder ──────────────────────────────────────────
 # Alongside the 2D DINOv2 slice encoder, each phase's stack of lesion-cropped
 # slices is also treated as a single (1, S, IMG_SIZE, IMG_SIZE) volume and run

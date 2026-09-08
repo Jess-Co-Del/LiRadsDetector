@@ -207,3 +207,82 @@ def collate_cases(batch: list) -> dict:
         "ord_idx": torch.tensor([b["ord_idx"] for b in batch], dtype=torch.long),
         "clinical_features": torch.stack([b["clinical_features"] for b in batch], dim=0),
     }
+
+
+class ClinicalMetadataDataset(Dataset):
+    """
+    Training data for model.ClinicalPredictorNet (see train_clinical.py):
+    the same per-case CT images LiRadsCaseDataset uses, but targets are
+    train_metadata.csv's own aphe/washout/capsule columns -- what a real
+    submission's input never supplies (see config's "Clinical feature
+    prediction" section) -- instead of lirads_score.
+
+    config.NO_LESION_LABEL rows are always dropped: there's no target
+    lesion for aphe/washout/capsule to describe, so their clinical columns
+    are meaningless training targets, not just missing ones.
+
+    No lesion-transplant augmentation, unlike LiRadsCaseDataset:
+    lesion_transplant.transplant_case swaps in a donor's lesion but this
+    dataset would still attach the recipient row's own aphe/washout/capsule
+    labels to it, describing the wrong lesion. Geometric/intensity
+    augmentation only (`augment`, see preprocessing.build_case_tensors).
+    """
+
+    def __init__(
+        self,
+        metadata_csv: str,
+        data_root: str,
+        max_slices: int = config.MAX_SLICES_PER_CASE,
+        case_ids: Optional[Sequence[str]] = None,
+        augment: bool = False,
+        aphe_categories: Sequence[str] = config.APHE_PREDICTABLE_CATEGORIES,
+    ):
+        df = pd.read_csv(metadata_csv)
+        df.columns = df.columns.str.strip().str.lower()
+        required_cols = ["case_id", "lirads_score", "aphe"] + config.CLINICAL_BINARY_FEATURES
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            raise ValueError(f"{metadata_csv} is missing column(s): {missing_cols}")
+        if case_ids is not None:
+            wanted = set(str(c) for c in case_ids)
+            df = df[df["case_id"].astype(str).isin(wanted)]
+            missing = wanted - set(df["case_id"].astype(str))
+            if missing:
+                raise ValueError(f"{len(missing)} case_id(s) from the split not found in {metadata_csv}: {sorted(missing)[:5]}...")
+        df = df[df["lirads_score"].str.strip() != config.NO_LESION_LABEL]
+        self.df = df.reset_index(drop=True)
+        self.data_root = data_root
+        self.max_slices = max_slices
+        self.augment = augment
+        self.aphe_categories = list(aphe_categories)
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, idx: int) -> dict:
+        row = self.df.iloc[idx]
+        case_id = str(row["case_id"])
+        case_dir = _find_case_dir(self.data_root, case_id)
+        phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
+        mask_path = preprocessing.find_case_mask_path(case_dir)
+        phase_data = preprocessing.build_case_tensors(
+            phase_paths, mask_path, self.max_slices, augment=self.augment,
+        )
+
+        # -1 for a missing/unrecognized aphe label -- masked out of the
+        # aphe loss term (see train_clinical.py) rather than trained
+        # against, since there's no real target for those rows.
+        aphe = str(row["aphe"]).strip() if pd.notna(row["aphe"]) else None
+        aphe_idx = self.aphe_categories.index(aphe) if aphe in self.aphe_categories else -1
+        binary_targets = torch.tensor([float(row[c]) for c in config.CLINICAL_BINARY_FEATURES], dtype=torch.float32)
+
+        return {"case_id": case_id, "phase_data": phase_data, "aphe_idx": aphe_idx, "binary_targets": binary_targets}
+
+
+def collate_clinical_cases(batch: list) -> dict:
+    return {
+        "case_ids": [b["case_id"] for b in batch],
+        "phase_data": [b["phase_data"] for b in batch],
+        "aphe_idx": torch.tensor([b["aphe_idx"] for b in batch], dtype=torch.long),
+        "binary_targets": torch.stack([b["binary_targets"] for b in batch], dim=0),
+    }

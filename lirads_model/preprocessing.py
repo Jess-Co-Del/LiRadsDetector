@@ -8,6 +8,7 @@ from typing import Optional
 import nibabel as nib
 import numpy as np
 import torch
+from scipy.spatial import ConvexHull, QhullError
 
 from . import augmentation, config
 
@@ -376,3 +377,59 @@ def find_case_liver_path(case_dir: str) -> str:
     paste placement to real liver tissue. Same per-case layout as
     find_case_mask_path()."""
     return os.path.join(case_dir, "annotations", "liver.nii.gz")
+
+
+def compute_max_diameter_mm(mask_path: str) -> float:
+    """
+    Deterministic (non-learned) stand-in for train_metadata.csv's
+    max_diameter_mm column, used by predict_clinical.py to fill that one
+    field of a synthesized clinical row (see config's "Clinical feature
+    prediction" section -- the other 8 fields come from
+    model.ClinicalPredictorNet instead, since geometry alone can't recover
+    them). Standard LI-RADS practice measures a lesion's largest diameter on
+    the single axial slice showing its greatest extent, so this: for every
+    axial slice with any lesion voxels, finds the largest pairwise distance
+    (in mm) between two of that slice's mask pixels, and returns the max of
+    that over all slices. 0.0 for an empty mask.
+
+    Reads the mask directly with nibabel rather than going through
+    load_volume/load_case_volumes (which drop the affine and resample onto
+    another phase's grid for model input) so the physical pixel spacing
+    used for the mm conversion is exact, straight from the file's own
+    header, and handles anisotropic in-plane spacing by scaling each axis
+    by its own zoom before measuring distance.
+
+    Within a slice, the true farthest-apart pair of points is always two
+    vertices of that point set's convex hull (an interior point can never
+    be farther from every other point than some hull vertex is), so
+    reducing to hull vertices before the pairwise search is exact, not an
+    approximation -- it just avoids an O(pixel_count^2) distance search
+    over every foreground pixel in a large lesion slice.
+    """
+    img = nib.load(mask_path)
+    mask = np.asarray(img.get_fdata()) > 0.5
+    if not mask.any():
+        return 0.0
+
+    zooms = img.header.get_zooms()
+    row_axis, col_axis = (a for a in range(mask.ndim) if a != config.SLICE_AXIS)
+    row_mm, col_mm = float(zooms[row_axis]), float(zooms[col_axis])
+
+    best_mm = 0.0
+    for z in range(mask.shape[config.SLICE_AXIS]):
+        mask2d = mask.take(z, axis=config.SLICE_AXIS)
+        if not mask2d.any():
+            continue
+        rows, cols = np.nonzero(mask2d)
+        points_mm = np.stack([rows * row_mm, cols * col_mm], axis=1)
+        if len(points_mm) < 2:
+            continue
+        if len(points_mm) >= 4:
+            try:
+                points_mm = points_mm[ConvexHull(points_mm).vertices]
+            except QhullError:
+                pass  # collinear/degenerate slice -- fall back to the full point set
+        diffs = points_mm[:, None, :] - points_mm[None, :, :]
+        slice_max = float(np.sqrt((diffs ** 2).sum(axis=-1)).max())
+        best_mm = max(best_mm, slice_max)
+    return best_mm

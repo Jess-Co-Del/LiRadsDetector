@@ -201,6 +201,144 @@ class LiRadsNet(nn.Module):
         return logits_cat, self.ord_head(h)
 
 
+class ClinicalPredictorNet(nn.Module):
+    """
+    Predicts encode_clinical_features's 8 non-diameter dims (aphe's one-hot
+    + the 4 washout/capsule binary flags) straight from the CT images --
+    max_diameter_mm, the 9th, is deterministic geometry instead
+    (preprocessing.compute_max_diameter_mm), not something this model
+    touches. See config's "Clinical feature prediction" section for why:
+    the real submission input never includes clinical metadata, so
+    predict_clinical.py runs this model per case to synthesize the row
+    LiRadsNet's clinical branch expects, trained by train_clinical.py on
+    train_metadata.csv's own aphe/washout/capsule columns as targets.
+
+    Same image-encoding shape as LiRadsNet's trunk (per-phase masked-pooled
+    DINOv2 features + optional PhaseVolumeCNN -- see encode_phase/
+    encode_phase_cnn/encode_case below, deliberately duplicated from
+    LiRadsNet rather than shared: this model must never take clinical
+    features as *input* -- there'd be nothing left to predict -- so it
+    carries its own backbone instance and is trained/checkpointed entirely
+    independently of the main LiRadsNet, and duplicating this trunk means
+    neither model's checkpoint depends on the other's module layout).
+    """
+
+    def __init__(
+        self,
+        backbone: Dinov2SliceEncoder,
+        embed_dim: int = config.EMBED_DIM,
+        grid_size: int = config.GRID_SIZE,
+        hidden1: int = config.HEAD_HIDDEN_1,
+        hidden2: int = config.HEAD_HIDDEN_2,
+        dropout: float = config.HEAD_DROPOUT,
+        use_cnn: bool = True,
+        aphe_categories: Sequence[str] = config.APHE_PREDICTABLE_CATEGORIES,
+        binary_features: Sequence[str] = config.CLINICAL_BINARY_FEATURES,
+    ):
+        super().__init__()
+        self.backbone = backbone
+        self.embed_dim = embed_dim
+        self.grid_size = grid_size
+        self.phase_names = config.PHASE_NAMES
+        self.use_cnn = use_cnn
+        self.aphe_categories = list(aphe_categories)
+        self.binary_features = list(binary_features)
+
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+
+        self.cnn_out_size = config.CNN_FEATURE_MAP_SIZE
+        if self.use_cnn:
+            self.cnn_encoders = nn.ModuleList([PhaseVolumeCNN(self.cnn_out_size) for _ in self.phase_names])
+            cnn_feat_dim = self.cnn_out_size * self.cnn_out_size
+        else:
+            self.cnn_encoders = None
+            cnn_feat_dim = 0
+
+        phase_feat_dim = embed_dim * 2 + cnn_feat_dim
+        self.missing_phase_embed = nn.Parameter(torch.randn(len(self.phase_names), phase_feat_dim) * 0.02)
+
+        in_dim = phase_feat_dim * len(self.phase_names)
+        self.head = nn.Sequential(
+            nn.LayerNorm(in_dim),
+            nn.Linear(in_dim, hidden1),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden1, hidden2),
+            nn.GELU(),
+        )
+        # aphe_head: single-label softmax over aphe_categories (mutually
+        # exclusive). binary_head: one independent sigmoid logit per
+        # binary_features entry (not mutually exclusive with each other).
+        self.aphe_head = nn.Linear(hidden2, len(self.aphe_categories))
+        self.binary_head = nn.Linear(hidden2, len(self.binary_features))
+
+    # encode_phase/encode_phase_cnn/encode_case: identical to LiRadsNet's
+    # own (see there for the "why" of each step) -- duplicated, see this
+    # class's docstring.
+    def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
+        patch_tokens, cls_token = self.backbone(pixel_values)  # (S,N,D), (S,D)
+        S = patch_tokens.shape[0]
+        patch_tokens = patch_tokens.view(S, self.grid_size, self.grid_size, self.embed_dim)
+
+        mask_sum = mask_grids.sum(dim=(1, 2), keepdim=True).clamp_min(1e-6)
+        mask_w = mask_grids / mask_sum
+        masked_pooled = (patch_tokens * mask_w.unsqueeze(-1)).sum(dim=(1, 2))  # (S,D)
+
+        slice_w = slice_weights / slice_weights.sum().clamp_min(1e-6)  # (S,)
+        phase_masked = (masked_pooled * slice_w.unsqueeze(-1)).sum(dim=0)  # (D,)
+        phase_cls = (cls_token * slice_w.unsqueeze(-1)).sum(dim=0)  # (D,)
+        return torch.cat([phase_masked, phase_cls], dim=0)  # (2D,)
+
+    def encode_phase_cnn(self, volume: torch.Tensor, phase_idx: int) -> torch.Tensor:
+        """volume: (S, H, W) single-channel slice stack -> (cnn_out_size**2,)"""
+        x = volume.unsqueeze(0).unsqueeze(0)  # (1, 1, S, H, W)
+        return self.cnn_encoders[phase_idx](x)
+
+    def encode_case(self, phase_data: Dict[str, PhaseData]) -> torch.Tensor:
+        device = self.missing_phase_embed.device
+        feats = []
+        for i, phase in enumerate(self.phase_names):
+            data = phase_data.get(phase)
+            if data is None:
+                feats.append(self.missing_phase_embed[i])
+            else:
+                pixel_values, mask_grids, slice_weights, volume = data
+                dinov2_feat = self.encode_phase(
+                    pixel_values.to(device), mask_grids.to(device), slice_weights.to(device)
+                )
+                if self.use_cnn:
+                    cnn_feat = self.encode_phase_cnn(volume.to(device), i)
+                    feats.append(torch.cat([dinov2_feat, cnn_feat], dim=0))
+                else:
+                    feats.append(dinov2_feat)
+        return torch.cat(feats, dim=0)  # (phase_feat_dim * n_phases,)
+
+    def forward(self, batch_phase_data: List[Dict[str, PhaseData]]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Returns (aphe_logits, binary_logits): (B, len(aphe_categories))
+        and (B, len(binary_features))."""
+        case_feats = torch.stack([self.encode_case(pd) for pd in batch_phase_data], dim=0)
+        h = self.head(case_feats)
+        return self.aphe_head(h), self.binary_head(h)
+
+
+def decode_clinical_prediction(
+    aphe_logits: torch.Tensor, binary_logits: torch.Tensor,
+    aphe_categories: Sequence[str] = config.APHE_PREDICTABLE_CATEGORIES,
+    binary_features: Sequence[str] = config.CLINICAL_BINARY_FEATURES,
+) -> dict:
+    """One case's ClinicalPredictorNet output -> {"aphe": str,
+    <binary_features[i]>: 0/1, ...} -- the same column names
+    dataset.encode_clinical_features expects, aside from max_diameter_mm
+    (see preprocessing.compute_max_diameter_mm). aphe_logits:
+    (len(aphe_categories),), binary_logits: (len(binary_features),)."""
+    aphe = aphe_categories[int(torch.argmax(aphe_logits).item())]
+    result = {"aphe": aphe}
+    for name, p in zip(binary_features, torch.sigmoid(binary_logits).tolist()):
+        result[name] = int(p >= 0.5)
+    return result
+
+
 def decode_prediction(
     logits_cat: Optional[torch.Tensor], logits_ord: torch.Tensor, ordinal_head_type: str = "softmax",
     cat_names: Sequence[str] = config.CAT_NAMES,
