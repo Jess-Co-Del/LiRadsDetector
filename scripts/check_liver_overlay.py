@@ -1,4 +1,5 @@
-"""Quick visual sanity-check: CT slices with the liver segmentation mask
+"""
+Quick visual sanity-check: CT slices with the liver segmentation mask
 (scripts/segment_livers.py's output) overlaid as a red contour, saved to one
 PNG grid (rows = cases, columns = slices spread evenly across the liver's
 z-extent).

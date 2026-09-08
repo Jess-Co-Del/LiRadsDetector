@@ -363,6 +363,7 @@ def train(args: argparse.Namespace) -> None:
             f"qwk={result['adjusted_qwk']:.4f} scr={result['special_category_recognition']:.4f}",
             log_path
         )
+
         val_merged = val_ds.df[["case_id", "lirads_score"]].astype({"case_id": str}).merge(
             val_preds.astype({"case_id": str}), on="case_id", how="inner",
         )

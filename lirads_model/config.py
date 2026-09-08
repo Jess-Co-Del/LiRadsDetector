@@ -205,7 +205,7 @@ LIVER_SEGMENTATION_PHASE = "DEL"
 # 3D shape to compute the deformation field. Needs only the lesion.nii.gz
 # every case already has -- no liver segmentation required.
 ANATOMY_AUGMENT_PROB = 0.25                # per-case probability the deformation is applied at all
-ANATOMY_DILATION_RANGE_VOX = (-15.0, 15.0)  # signed warp magnitude in voxels; negative compresses the lesion inward, positive distends it outward
+ANATOMY_DILATION_RANGE_VOX = (-20.0, 20.0)  # signed warp magnitude in voxels; negative compresses the lesion inward, positive distends it outward
 # In-plane / slice-thickness voxel spacing ratio, needed to scale the warp's
 # blur/gradient along the slice axis correctly. Volumes here aren't
 # affine-tracked past preprocessing.load_volume (which drops nibabel's

@@ -100,19 +100,20 @@ def _forward_with_tta(
     tta_views: int,
     rng: Optional[np.random.Generator] = None,
 ):
-    """Runs one deterministic (unaugmented) forward pass to decide the
-    category gate, then -- only when that pass says "ordinal" (always true
-    for a single-head, ordinal-only model, where logits_cat is None -- see
-    model.LiRadsNet's use_cat_head) and tta_views > 0 -- runs `tta_views`
+    """
+    Runs one deterministic (unaugmented) forward pass to decide the
+    category gate, then, only when that pass says "ordinal" (always true
+    for a single-head, ordinal-only model, where logits_cat is None, see
+    model.LiRadsNet's use_cat_head) and tta_views > 0, runs `tta_views`
     more forward passes on freshly augmented views of the same case
     (config.TTA_VIEWS / see augmentation.py) and averages their ordinal-head
     logits in with the deterministic pass's, before the caller decodes a
     final label. The category-gate logits are always the single
-    deterministic pass's, never averaged -- TTA here only steadies which of
+    deterministic pass's, never averaged, TTA here only steadies which of
     LR-1..LR-5 gets picked. Returns (logits_cat, logits_ord): logits_cat is
     a (4,) CPU tensor, or None for an ordinal-only model; logits_ord is a
     (5,) CPU tensor for a "softmax" ordinal head or (4,) for a "corn" one
-    (see model.LiRadsNet's ordinal_head_type) -- the caller must decode it
+    (see model.LiRadsNet's ordinal_head_type), the caller must decode it
     with that same model's ordinal_head_type (decode_prediction's third arg).
     """
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
@@ -120,6 +121,7 @@ def _forward_with_tta(
 
     phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, max_slices)
     logits_cat, logits_ord = model([phase_data])
+    print("Lever pred:", case_id, logits_cat, logits_ord)
     logits_cat = logits_cat[0].cpu() if logits_cat is not None else None
     logits_ord = logits_ord[0].cpu()
 
@@ -131,7 +133,8 @@ def _forward_with_tta(
             aug_phase_data = preprocessing.build_case_tensors(
                 phase_paths, mask_path, max_slices, augment=True, rng=rng,
             )
-            _, aug_logits_ord = model([aug_phase_data])
+            aug_logits_cat, aug_logits_ord = model([aug_phase_data])
+            print("augmented pred:", aug_logits_cat, aug_logits_ord)
             ord_logits_sum += aug_logits_ord[0].cpu()
         logits_ord = ord_logits_sum / (tta_views + 1)
 
@@ -287,11 +290,8 @@ def predict_fold_test_set(
         checkpoint_paths = [checkpoint_paths]
 
     test_case_ids = load_fold(splits_json, fold)["test"]
-    # test_ds = LiRadsCaseDataset(metadata_csv, data_root, max_slices, case_ids=test_case_ids)
 
-    test_ds = LiRadsCaseDataset(
-        metadata_csv, data_root, max_slices,
-    case_ids=pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list())
+    test_ds = LiRadsCaseDataset(metadata_csv, data_root, max_slices, case_ids=test_case_ids)
 
     per_model_preds = []
     if tta_views > 0:
