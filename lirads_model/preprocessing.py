@@ -432,4 +432,4 @@ def compute_max_diameter_mm(mask_path: str) -> float:
         diffs = points_mm[:, None, :] - points_mm[None, :, :]
         slice_max = float(np.sqrt((diffs ** 2).sum(axis=-1)).max())
         best_mm = max(best_mm, slice_max)
-    return best_mm
+    return round(best_mm, 1)

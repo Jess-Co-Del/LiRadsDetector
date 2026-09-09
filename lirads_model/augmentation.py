@@ -1,4 +1,5 @@
-"""Random 2D data-augmentation transforms (rotation, zoom, flips, intensity
+"""
+Random 2D data-augmentation transforms (rotation, zoom, flips, intensity
 jitter), applied at training time only.
 
 One parameter set is sampled per case (`sample_augment_params`) and reused
