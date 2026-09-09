@@ -4,14 +4,14 @@ slice window (config.MAX_SLICES_PER_CASE) is cutting off part of the lesion
 mask, broken down by lirads_score.
 
 Motivation: LR-TIV (tumor extending into a vein) is structurally the class
-most likely to have an elongated, asymmetric z-footprint -- primary mass at
-one end, thrombus trailing toward the vessel at the other -- unlike a
+most likely to have an elongated, asymmetric z-footprint,primary mass at
+one end, thrombus trailing toward the vessel at the other,unlike a
 roughly-spherical, z-compact LR-M/LR-5 nodule. Center-trimming a z-range
 longer than max_slices keeps the middle and discards the periphery, which
 for LR-TIV is disproportionately likely to be the vein-invasion segment
 itself. This script measures, per case, the mask's full z-extent vs. what
 lesion_slice_indices actually retains, and what fraction of mask voxels fall
-outside the retained window -- then aggregates by label so you can see
+outside the retained window,then aggregates by label so you can see
 whether LR-TIV is hit harder than other classes.
 
 Usage:
@@ -77,7 +77,7 @@ def main() -> None:
 
     out = pd.DataFrame(rows)
     if out.empty:
-        print("no cases with a loadable mask were found -- check --data_root")
+        print("no cases with a loadable mask were found,check --data_root")
         return
 
     summary = out.groupby("label").agg(

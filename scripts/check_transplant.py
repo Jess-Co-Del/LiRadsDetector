@@ -1,7 +1,7 @@
 """Quick visual sanity-check for lesion_transplant.py: for each donor case,
 runs the real transplant_case() pipeline (donor lesion pasted into a random
-recipient's liver) and saves a PNG grid so a botched paste -- a visible seam,
-a lesion clipped at the liver boundary, an obviously wrong location -- is
+recipient's liver) and saves a PNG grid so a botched paste,a visible seam,
+a lesion clipped at the liver boundary, an obviously wrong location,is
 easy to spot before trusting the augmentation in training.
 
 Each row is one donor: the first column is the donor's own lesion as it
@@ -37,7 +37,7 @@ from lirads_model.dataset import _find_case_dir  # noqa: E402
 
 
 def _pick_slice_indices(mask: np.ndarray, n_slices: int) -> list:
-    """Evenly spaced z-indices across mask's own z-extent -- like
+    """Evenly spaced z-indices across mask's own z-extent,like
     scripts/check_liver_overlay.py's helper, but for the pasted lesion mask
     rather than the liver mask, so the columns actually walk through the
     transplanted lesion instead of the recipient's whole liver."""
@@ -113,7 +113,7 @@ def plot_transplant_row(
         for ax in ax_row[1:]:
             ax.axis("off")
         ax_row[1].set_title(f"transplant failed:\n{last_error}", fontsize=8, color="red")
-        print(f"{donor_case_id}: FAILED after {attempt + 1} recipient attempt(s) -- {last_error}")
+        print(f"{donor_case_id}: FAILED after {attempt + 1} recipient attempt(s),{last_error}")
         return
 
     print(f"{donor_case_id} -> {rid}: pasted lesion voxels = {int(mask_vol.sum())}")

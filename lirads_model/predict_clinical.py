@@ -33,11 +33,13 @@ from .model import ClinicalPredictorNet
 
 
 def load_clinical_model(checkpoint_path: str, device: torch.device, backbone_source: str = "local") -> ClinicalPredictorNet:
-    """Mirrors predict.load_model: "local" (no network -- submission
+    """
+    Mirrors predict.load_model: "local" (no network,submission
     container) vs. "hub" (re-downloads the pretrained backbone, for local
     dev without a vendored snapshot). The checkpoint records whether the
     3D-CNN branch was used at training time (train_clinical.py --use_cnn),
-    so the right architecture is reconstructed automatically."""
+    so the right architecture is reconstructed automatically.
+    """
     if backbone_source == "local":
         backbone = Dinov2SliceEncoder.from_local()
     else:
@@ -72,7 +74,7 @@ def predict_case_metadata(
     own softmax/sigmoid probabilities before decoding (rather than
     majority-voting the already-decoded labels), since every model here
     shares the same output space (see ClinicalPredictorNet's aphe_categories/
-    binary_features) -- unlike predict.predict_case_ensemble's LI-RADS
+    binary_features),unlike predict.predict_case_ensemble's LI-RADS
     majority vote, which exists because different checkpoints there can have
     different category heads."""
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
@@ -93,7 +95,7 @@ def predict_case_metadata(
 
     # Decoded from the ensemble-averaged probabilities directly (not via
     # model.decode_clinical_prediction, which applies its own sigmoid to
-    # its input -- these are already post-sigmoid, and sigmoid-ing them
+    # its input,these are already post-sigmoid, and sigmoid-ing them
     # again would push every value above 0.5).
     result = {"aphe": aphe_categories[int(torch.argmax(aphe_prob).item())]}
     for name, p in zip(binary_features, binary_prob.tolist()):
@@ -113,8 +115,8 @@ def generate_metadata_csv(
     """Builds one row per case_id and writes it to `out_path` (columns:
     case_id, aphe, washout_venous, washout_delayed, capsule_venous,
     capsule_delayed, max_diameter_mm). A case that fails entirely (missing
-    phase file, unreadable mask, ...) is skipped -- not filled with a
-    fabricated row -- so its absence from the output CSV is visible to the
+    phase file, unreadable mask, ...) is skipped,not filled with a
+    fabricated row,so its absence from the output CSV is visible to the
     caller, who should fall back to clinical_features=None for it (the same
     "missing metadata" path LiRadsNet already has, see its
     missing_clinical_embed) rather than trust made-up values."""

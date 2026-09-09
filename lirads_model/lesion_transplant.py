@@ -4,9 +4,9 @@ LR-3 by default, see config.TRANSPLANT_DONOR_LABELS).
 With only a handful of real examples of these classes (see train_metadata.csv),
 training on the same static cases every epoch gives the model little chance
 to generalize past their specific backgrounds. transplant_case() instead
-extracts a donor case's real, correctly-labeled lesion -- the full 3D patch,
+extracts a donor case's real, correctly-labeled lesion,the full 3D patch,
 across every CT phase, so its true multi-phase enhancement pattern (APHE,
-washout, ...) is preserved -- and pastes it into a different recipient case's
+washout, ...) is preserved,and pastes it into a different recipient case's
 liver at a random plausible location, alpha-feathering the seam so there's no
 hard boundary. The synthesized case is labeled with the donor's real label; it
 keeps the lesion's true appearance while varying the surrounding parenchyma,
@@ -14,7 +14,7 @@ vasculature, and noise texture each time it's drawn.
 
 Placement is constrained to the recipient's own liver, segmented ahead of
 time by a pretrained nnUNetv2 model (scripts/segment_livers.py) rather than
-approximated -- pasting outside the liver would be anatomically implausible
+approximated,pasting outside the liver would be anatomically implausible
 and could hurt more than help. Cases without a liver mask on disk simply
 aren't eligible recipients (see find_recipient_case_id()).
 """
@@ -60,7 +60,7 @@ def extract_lesion_patch(phase_vols: dict, mask_vol: torch.Tensor, margin_frac: 
     {"phases": {phase: cropped_vol}, "mask": cropped_bool_mask}. Raises
     ValueError if the mask has no positive voxels (nothing to extract)."""
     if not mask_vol.any():
-        raise ValueError("mask_vol has no positive voxels -- nothing to extract a lesion patch from")
+        raise ValueError("mask_vol has no positive voxels,nothing to extract a lesion patch from")
 
     (r0, r1), (c0, c1), (z0, z1) = _bbox_3d(mask_vol, margin_frac)
     return {
@@ -72,7 +72,7 @@ def extract_lesion_patch(phase_vols: dict, mask_vol: torch.Tensor, margin_frac: 
 def _feathered_alpha(mask: torch.Tensor, feather_vox: int) -> torch.Tensor:
     """Soft [0,1] blend weight: exactly 1 for voxels feather_vox/2 or more
     inside the mask, exactly 0 for voxels feather_vox/2 or more outside it,
-    and a smooth linear ramp across the boundary in between -- a signed
+    and a smooth linear ramp across the boundary in between,a signed
     distance-transform feather, so paste boundary transitions are gradual
     without a hard seam. Deliberately not a global gaussian blur: blurring a
     lesion smaller than the blur radius (routine for LR-1/LR-2, often just a
@@ -83,7 +83,7 @@ def _feathered_alpha(mask: torch.Tensor, feather_vox: int) -> torch.Tensor:
 
     `mask` is a small (already lesion-cropped, see extract_lesion_patch())
     torch.Tensor; distance_transform_edt has no torch-native equivalent, so
-    it's computed via a local numpy round-trip -- this path only runs at
+    it's computed via a local numpy round-trip,this path only runs at
     training time (dataset.py's transplant augmentation), where scipy is
     already a required dependency, so it doesn't affect inference."""
     if feather_vox <= 0:
@@ -113,7 +113,7 @@ def choose_paste_center(
     max_attempts: int = config.TRANSPLANT_MAX_PLACEMENT_ATTEMPTS,
 ) -> Optional[tuple]:
     """Random-search for a center voxel such that the full patch_shape box
-    around it lands entirely inside liver_mask -- i.e. the pasted lesion
+    around it lands entirely inside liver_mask,i.e. the pasted lesion
     never spills past the recipient's real liver boundary. Returns None if
     no valid placement was found in max_attempts tries (e.g. the patch is
     larger than the recipient's liver, or the liver mask is empty)."""
@@ -137,14 +137,14 @@ def paste_lesion(
 ) -> tuple:
     """Alpha-composites `patch` (from extract_lesion_patch()) into
     recipient_phase_vols at `center`, independently per phase, and returns
-    a fresh (phase_vols, mask_vol) pair -- the recipient's own inputs are
+    a fresh (phase_vols, mask_vol) pair,the recipient's own inputs are
     never mutated in place. The new mask_vol is the patch's lesion mask
-    translated to `center` (a crisp copy, not the soft alpha -- feathering
+    translated to `center` (a crisp copy, not the soft alpha,feathering
     only smooths the pasted image content's boundary, the ground-truth
     lesion shape stays exact). recipient_mask_vol is otherwise discarded:
     callers should only pass a recipient with no real lesion of its own
     (config.NO_LESION_LABEL) so a hidden, unlabeled second lesion is never
-    introduced -- see find_recipient_case_id().
+    introduced,see find_recipient_case_id().
     """
     patch_shape = patch["mask"].shape
     half = tuple(s // 2 for s in patch_shape)
@@ -169,7 +169,7 @@ def paste_lesion(
 
 def find_recipient_case_id(df: pd.DataFrame, exclude_case_id: str, rng: np.random.Generator) -> Optional[str]:
     """Picks a random recipient case_id from df, preferring
-    config.NO_LESION_LABEL cases -- clean liver background with no real
+    config.NO_LESION_LABEL cases,clean liver background with no real
     lesion of its own, so pasting can't create a hidden, unlabeled second
     lesion (see paste_lesion()). Falls back to any other case if the split
     has none, excluding `exclude_case_id` itself either way. Returns None if
@@ -204,7 +204,7 @@ def transplant_case(
     Raises FileNotFoundError if the recipient has no liver.nii.gz yet (see
     scripts/segment_livers.py) and ValueError if no valid placement was
     found (patch too large for this recipient's liver, or the donor mask is
-    empty) -- callers should catch both and fall back to the case's own real
+    empty),callers should catch both and fall back to the case's own real
     data rather than let a rare, hard-won training case fail outright.
     """
     donor_phase_paths = preprocessing.find_case_phase_paths(donor_case_dir, donor_case_id)

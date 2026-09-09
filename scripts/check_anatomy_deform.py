@@ -3,8 +3,8 @@ runs the real anatomy-informed deform on a case's own volumes and saves a
 before/after PNG grid so it's easy to see that the local warp is distending/
 compressing the *lesion* (not the liver, and not the whole image globally).
 
-For each case the grid has two rows -- the original volume and the deformed
-one -- sharing the same slice indices and the same tight crop around the
+For each case the grid has two rows,the original volume and the deformed
+one,sharing the same slice indices and the same tight crop around the
 lesion, with the lesion mask overlaid as a red contour. The "after" row also
 draws the original lesion outline in dashed cyan, so the shape change is
 visible at a glance. Each case's sampled warp magnitude and its lesion voxel
@@ -40,7 +40,7 @@ from lirads_model.dataset import _find_case_dir  # noqa: E402
 
 
 def _lesion_z_indices(mask: np.ndarray, n_slices: int) -> list:
-    """Evenly spaced z-indices across the lesion mask's own z-extent -- same
+    """Evenly spaced z-indices across the lesion mask's own z-extent,same
     idea as scripts/check_transplant.py's helper."""
     other_axes = tuple(a for a in range(mask.ndim) if a != config.SLICE_AXIS)
     z_with_lesion = np.where(mask.sum(axis=other_axes) > 0)[0]
@@ -54,7 +54,7 @@ def _shared_inplane_bbox(masks: list, margin_frac: float = 0.6) -> tuple:
     """In-plane (row, col) bounding box covering every mask in `masks`
     (each a full 3D bool array, SLICE_AXIS last), padded by margin_frac of
     the larger side. Shared by the before/after panels so the lesion is
-    framed identically and the deformation -- not a shifting crop -- is what
+    framed identically and the deformation,not a shifting crop,is what
     moves on screen."""
     combined = np.zeros(
         tuple(s for a, s in enumerate(masks[0].shape) if a != config.SLICE_AXIS), dtype=bool

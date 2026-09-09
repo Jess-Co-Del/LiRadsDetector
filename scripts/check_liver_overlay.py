@@ -5,7 +5,7 @@ PNG grid (rows = cases, columns = slices spread evenly across the liver's
 z-extent).
 
 Meant to be a cheap first check before trusting the liver mask to drive
-lesion_transplant.py's paste placement -- run this on a handful of cases
+lesion_transplant.py's paste placement,run this on a handful of cases
 right after segment_livers.py, before running it over the whole dataset. Also
 prints each case's liver voxel count so a totally-empty or wildly-off mask is
 obvious even without opening the image.
@@ -29,7 +29,7 @@ from lirads_model.dataset import _find_case_dir  # noqa: E402
 
 
 def _pick_slice_indices(mask: np.ndarray, n_slices: int) -> list:
-    """Evenly spaced z-indices across the liver mask's own z-extent -- not
+    """Evenly spaced z-indices across the liver mask's own z-extent,not
     preprocessing.lesion_slice_indices, which is sized/centered for a lesion
     crop, not for surveying an entire liver."""
     other_axes = tuple(a for a in range(mask.ndim) if a != config.SLICE_AXIS)
@@ -47,7 +47,7 @@ def plot_case_overlay(case_dir: str, case_id: str, phase: str, ax_row) -> None:
         raise FileNotFoundError(f"{case_id}: no {phase} phase volume at {ct_path}")
     liver_path = preprocessing.find_case_liver_path(case_dir)
     if not os.path.exists(liver_path):
-        raise FileNotFoundError(f"{case_id}: no liver mask at {liver_path} -- run scripts/segment_livers.py first")
+        raise FileNotFoundError(f"{case_id}: no liver mask at {liver_path},run scripts/segment_livers.py first")
 
     ct_vol = preprocessing.load_volume(ct_path)
     liver_vol = preprocessing.load_volume(liver_path) > 0.5

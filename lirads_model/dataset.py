@@ -22,7 +22,7 @@ from . import config, lesion_transplant, preprocessing
 def label_to_targets(label: str, cat_names: Sequence[str] = config.CAT_NAMES):
     """Returns (cat_idx, ord_idx). ord_idx is -1 when the label isn't ordinal.
     cat_idx is `label`'s (or, for an ordinal label, "ordinal"'s) position in
-    `cat_names` -- normally config.CAT_NAMES's order (ordinal=0, LR-M=1,
+    `cat_names`,normally config.CAT_NAMES's order (ordinal=0, LR-M=1,
     LR-TIV=2, No lesion=3), but a caller training a narrower category head
     (e.g. train.py's --no-include_no_lesion, see LiRadsCaseDataset's
     cat_names) passes that same narrower list here so cat_idx lines up with
@@ -63,7 +63,7 @@ def _find_case_dir(data_root: str, case_id: str) -> str:
 # augmentation strategies are on, instead of three separate flags whose
 # combinations aren't all meaningful: lesion transplant and anatomy-informed
 # augmentation are each layered *on top of* the geometric (spatial) warp --
-# see lesion_transplant.py/config.ANATOMY_* -- so neither is offered with
+# see lesion_transplant.py/config.ANATOMY_*,so neither is offered with
 # spatial augmentation off. "none" is the eval/test/inference default in all
 # but name; it's spelled out here so it can be requested explicitly too, e.g.
 # for an augmentation ablation run.
@@ -126,7 +126,7 @@ class LiRadsCaseDataset(Dataset):
             # cat_names is narrower than the full category set (train.py's
             # --no-include_no_lesion): config.NO_LESION_LABEL cases have no
             # category left to route them through, so they're dropped from
-            # the split -- the same silent-narrowing-of-an-existing-split
+            # the split,the same silent-narrowing-of-an-existing-split
             # behavior as the ordinal_only filter above.
             df = df[df["lirads_score"].str.strip() != config.NO_LESION_LABEL]
         self.df = df.reset_index(drop=True)
@@ -148,7 +148,7 @@ class LiRadsCaseDataset(Dataset):
         probability config.TRANSPLANT_PROB this case instead becomes a
         lesion *donor*: its real lesion is pasted into a different random
         recipient case's liver (lesion_transplant.transplant_case()), and
-        tensors are built from that synthesized volume instead -- still
+        tensors are built from that synthesized volume instead,still
         labeled `label`, since the transplanted lesion is the donor's real,
         correctly-labeled one. Falls back to this case's own real data if no
         recipient has a liver mask yet, or none has room for this lesion.
@@ -157,7 +157,7 @@ class LiRadsCaseDataset(Dataset):
         trigger the anatomy-informed deform (a random local warp of the
         case's own lesion, see config.ANATOMY_AUGMENT_PROB and
         augmentation.apply_anatomy_informed_deform), regardless of
-        self.transplant. It no longer needs a liver mask -- the deformation
+        self.transplant. It no longer needs a liver mask,the deformation
         field is computed from the lesion segmentation itself.
         """
         if self.transplant and label in config.TRANSPLANT_DONOR_LABELS:
@@ -175,7 +175,7 @@ class LiRadsCaseDataset(Dataset):
                             anatomy=self.anatomy,
                         )
                     except (FileNotFoundError, ValueError):
-                        pass  # no liver mask yet, or no room for this lesion -- fall back below
+                        pass  # no liver mask yet, or no room for this lesion,fall back below
 
         phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
         mask_path = preprocessing.find_case_mask_path(case_dir)
@@ -213,9 +213,9 @@ class ClinicalMetadataDataset(Dataset):
     """
     Training data for model.ClinicalPredictorNet (see train_clinical.py):
     the same per-case CT images LiRadsCaseDataset uses, but targets are
-    train_metadata.csv's own aphe/washout/capsule columns -- what a real
+    train_metadata.csv's own aphe/washout/capsule columns,what a real
     submission's input never supplies (see config's "Clinical feature
-    prediction" section) -- instead of lirads_score.
+    prediction" section),instead of lirads_score.
 
     config.NO_LESION_LABEL rows are never iterated over as training
     examples: there's no target lesion for aphe/washout/capsule to
@@ -309,7 +309,7 @@ class ClinicalMetadataDataset(Dataset):
         label = str(row["lirads_score"]).strip()
         phase_data = self._build_phase_data(case_id, case_dir, label)
 
-        # -1 for a missing/unrecognized aphe label -- masked out of the
+        # -1 for a missing/unrecognized aphe label,masked out of the
         # aphe loss term (see train_clinical.py) rather than trained
         # against, since there's no real target for those rows. Always this
         # row's own aphe/washout/capsule, whether or not transplant swapped

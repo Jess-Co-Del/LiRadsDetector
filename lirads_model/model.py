@@ -76,7 +76,7 @@ class LiRadsNet(nn.Module):
         # but a caller training on a narrower category set (e.g. train.py's
         # --no-include_no_lesion, which drops "No lesion") passes a shorter
         # list here so cat_head is sized to match and decode_prediction()
-        # can map cat_head's argmax back to the right name -- see
+        # can map cat_head's argmax back to the right name,see
         # dataset.LiRadsCaseDataset's cat_names/label_to_targets, which must
         # agree with whatever's passed here for a given training run.
         self.cat_names = list(cat_names)
@@ -86,7 +86,7 @@ class LiRadsNet(nn.Module):
 
         # One 3D CNN per phase (contrast behavior differs by phase), each
         # encoding that phase's slice stack as a genuine 3D volume rather
-        # than S independent 2D images -- complementary to DINOv2's per-slice
+        # than S independent 2D images,complementary to DINOv2's per-slice
         # view. See PhaseVolumeCNN and config.CNN_FEATURE_MAP_SIZE. Optional:
         # use_cnn=False runs DINOv2-only.
         self.cnn_out_size = config.CNN_FEATURE_MAP_SIZE
@@ -104,7 +104,7 @@ class LiRadsNet(nn.Module):
         # Linear projection, scaled by a learned weight before being
         # concatenated onto the image encoding. Not every case has this
         # metadata (the challenge submission input never does), so a learned
-        # placeholder embedding stands in when it's absent -- the same
+        # placeholder embedding stands in when it's absent,the same
         # pattern as missing_phase_embed above. Optional: use_clinical=False
         # drops this branch (images only).
         if self.use_clinical:
@@ -133,12 +133,12 @@ class LiRadsNet(nn.Module):
         )
         # Optional: use_cat_head=False drops the 4-way category head
         # entirely, for single-head training on the ordinal target alone
-        # (see config.ORDINAL_LABELS and LiRadsCaseDataset's ordinal_only) --
+        # (see config.ORDINAL_LABELS and LiRadsCaseDataset's ordinal_only),
         # forward() then returns None in its place, and decode_prediction()
         # skips the category gate and reads the ordinal head directly.
         self.cat_head = nn.Linear(hidden2, len(self.cat_names)) if self.use_cat_head else None
         # "corn" sizes the ordinal head to num_classes-1 conditional-threshold
-        # logits instead of a plain num_classes-way softmax -- see
+        # logits instead of a plain num_classes-way softmax,see
         # losses.CornSoftQWKLoss/corn_loss and decode_prediction() below.
         ord_out_dim = len(config.ORDINAL_LABELS) - 1 if self.ordinal_head_type == "corn" else len(config.ORDINAL_LABELS)
         self.ord_head = nn.Linear(hidden2, ord_out_dim)
@@ -204,7 +204,7 @@ class LiRadsNet(nn.Module):
 class ClinicalPredictorNet(nn.Module):
     """
     Predicts encode_clinical_features's 8 non-diameter dims (aphe's one-hot
-    + the 4 washout/capsule binary flags) straight from the CT images --
+    + the 4 washout/capsule binary flags) straight from the CT images:
     max_diameter_mm, the 9th, is deterministic geometry instead
     (preprocessing.compute_max_diameter_mm), not something this model
     touches. See config's "Clinical feature prediction" section for why:
@@ -214,10 +214,10 @@ class ClinicalPredictorNet(nn.Module):
     train_metadata.csv's own aphe/washout/capsule columns as targets.
 
     Same image-encoding shape as LiRadsNet's trunk (per-phase masked-pooled
-    DINOv2 features + optional PhaseVolumeCNN -- see encode_phase/
+    DINOv2 features + optional PhaseVolumeCNN,see encode_phase/
     encode_phase_cnn/encode_case below, deliberately duplicated from
     LiRadsNet rather than shared: this model must never take clinical
-    features as *input* -- there'd be nothing left to predict -- so it
+    features as *input*,there'd be nothing left to predict,so it
     carries its own backbone instance and is trained/checkpointed entirely
     independently of the main LiRadsNet, and duplicating this trunk means
     neither model's checkpoint depends on the other's module layout).
@@ -274,7 +274,7 @@ class ClinicalPredictorNet(nn.Module):
         self.binary_head = nn.Linear(hidden2, len(self.binary_features))
 
     # encode_phase/encode_phase_cnn/encode_case: identical to LiRadsNet's
-    # own (see there for the "why" of each step) -- duplicated, see this
+    # own (see there for the "why" of each step),duplicated, see this
     # class's docstring.
     def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
         patch_tokens, cls_token = self.backbone(pixel_values)  # (S,N,D), (S,D)
@@ -327,11 +327,13 @@ def decode_clinical_prediction(
     aphe_categories: Sequence[str] = config.APHE_PREDICTABLE_CATEGORIES,
     binary_features: Sequence[str] = config.CLINICAL_BINARY_FEATURES,
 ) -> dict:
-    """One case's ClinicalPredictorNet output -> {"aphe": str,
-    <binary_features[i]>: 0/1, ...} -- the same column names
+    """
+    One case's ClinicalPredictorNet output -> {"aphe": str,
+    <binary_features[i]>: 0/1, ...},the same column names
     dataset.encode_clinical_features expects, aside from max_diameter_mm
     (see preprocessing.compute_max_diameter_mm). aphe_logits:
-    (len(aphe_categories),), binary_logits: (len(binary_features),)."""
+    (len(aphe_categories),), binary_logits: (len(binary_features),).
+    """
     aphe = aphe_categories[int(torch.argmax(aphe_logits).item())]
     result = {"aphe": aphe}
     for name, p in zip(binary_features, torch.sigmoid(binary_logits).tolist()):
@@ -345,14 +347,14 @@ def decode_prediction(
 ) -> str:
     """logits_cat: (len(cat_names),) or None, logits_ord: (5,) for
     ordinal_head_type="softmax" or (4,) for "corn" (must match the LiRadsNet
-    that produced it -- see its ordinal_head_type) -> one of
+    that produced it,see its ordinal_head_type) -> one of
     config.VALID_LABELS or config.NO_LESION_LABEL (the latter must be
     remapped before it's ever submitted to the actual challenge, which
     doesn't score it). logits_cat is None for a single-head, ordinal-only
-    model (LiRadsNet(use_cat_head=False)) -- there's no category gate to
+    model (LiRadsNet(use_cat_head=False)),there's no category gate to
     consult, so the ordinal head's decoded rank is returned directly.
     `cat_names` must be the same list the producing LiRadsNet was built with
-    (its `.cat_names` attribute) -- pass config.CAT_NAMES only for a model
+    (its `.cat_names` attribute),pass config.CAT_NAMES only for a model
     trained with the default 4-way category head."""
     if logits_cat is not None:
         cat_idx = int(torch.argmax(logits_cat).item())

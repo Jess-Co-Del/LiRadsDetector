@@ -19,7 +19,7 @@ def load_volume(path: str) -> torch.Tensor:
 
 def _resample_to_shape(vol: torch.Tensor, target_shape: tuple) -> torch.Tensor:
     """Resamples a full 3D volume (image or mask) onto target_shape via
-    trilinear interpolation. Output dtype matches `vol`'s -- e.g. a bool
+    trilinear interpolation. Output dtype matches `vol`'s,e.g. a bool
     mask comes back bool, via the same nonzero-after-interpolation cast
     scipy.ndimage.zoom's output-dtype behavior gave the previous numpy
     implementation (not a clean sub-voxel threshold, but preserved here for
@@ -151,11 +151,11 @@ def prepare_phase_tensors(
     Returns (pixel_values[S,3,H,W], mask_grids[S,grid,grid], slice_weights[S],
     volume[S,IMG_SIZE,IMG_SIZE]). `volume` is the same windowed-normalized
     lesion crop as pixel_values, but single-channel and unpadded (no
-    Imagenet normalization, no patch-alignment padding, no pseudo-RGB) -- fed
+    Imagenet normalization, no patch-alignment padding, no pseudo-RGB),fed
     to the per-phase 3D CNN as a genuine (1, S, H, W) volume rather than S
     independent 2D images.
 
-    `volume`/`mask` are torch.Tensor -- every operation in this function
+    `volume`/`mask` are torch.Tensor,every operation in this function
     (slicing, cropping, resizing, padding, normalizing, augmenting) runs as
     a torch op, never round-tripping through numpy. Callers (see
     build_case_tensors_from_volumes) are responsible for converting the
@@ -163,7 +163,7 @@ def prepare_phase_tensors(
 
     `augment_params` (from augmentation.sample_augment_params, or None to
     disable) is applied identically to every slice, so it should be sampled
-    once per case and passed to every phase's call -- see
+    once per case and passed to every phase's call,see
     build_case_tensors's `augment` argument. It's applied to the whole
     per-phase (S, IMG_SIZE, IMG_SIZE) slice stack in one batched call
     (see augmentation.apply_geometric_stack) rather than slice by slice.
@@ -202,7 +202,7 @@ def prepare_phase_tensors(
 
     for img_resized, mask_resized in zip(img_stack, mask_stack):
         # Windowed-normalize before padding so the pad value (0.0) means "at
-        # or below WINDOW_LOW" -- a well-defined background level -- rather
+        # or below WINDOW_LOW",a well-defined background level,rather
         # than padding in raw HU space.
         img_norm = _window_normalize(img_resized).float()
         volume_slices.append(img_norm)
@@ -231,7 +231,7 @@ def load_case_volumes(
     """Loads one case's raw per-phase volumes + lesion mask from disk, all
     resampled to the ART phase's voxel grid. Returns (phase_vols, mask_vol,
     liver_mask_vol), phase_vols a {phase_name: torch.Tensor} dict, mask_vol a
-    bool torch.Tensor -- this is the point where each case's data crosses
+    bool torch.Tensor,this is the point where each case's data crosses
     from raw numpy (nibabel's native format) into tensor land; every function
     downstream of this one (_resample_to_shape above, and
     build_case_tensors_from_volumes/prepare_phase_tensors below) works
@@ -247,7 +247,7 @@ def load_case_volumes(
     find_case_liver_path()) to load + resample alongside the rest, for
     lesion_transplant.py's paste-placement constraint. liver_mask_vol is None
     when `liver_path` is None or the file doesn't exist yet
-    (segment_livers.py hasn't run on this case) -- callers that need it (only
+    (segment_livers.py hasn't run on this case),callers that need it (only
     lesion_transplant.transplant_case) should treat that as "this case can't
     be a transplant recipient" rather than an error.
     """
@@ -290,7 +290,7 @@ def build_case_tensors_from_volumes(
     """
     The tensor-prep half of build_case_tensors(): z-index selection +
     per-phase crop/resize/window/augment, given already-loaded (and, for a
-    transplanted case, already-spliced) torch.Tensor volumes -- see
+    transplanted case, already-spliced) torch.Tensor volumes,see
     load_case_volumes() and lesion_transplant.transplant_case(), the two
     producers of phase_vols/mask_vol. See build_case_tensors() for
     `augment`/`rng`.
@@ -300,7 +300,7 @@ def build_case_tensors_from_volumes(
     local deformation of its own lesion
     (augmentation.apply_anatomy_informed_deform) *before* z-index selection,
     so the lesion-centered slice window below is chosen from the deformed
-    volume. Left False (or augment=False) to skip this entirely -- e.g.
+    volume. Left False (or augment=False) to skip this entirely,e.g.
     eval/test, or an --augment_mode without anatomy.
     """
     if augment:
@@ -336,12 +336,12 @@ def build_case_tensors(
 
     `augment`: when True, one set of random rotation/zoom/flip/intensity
     parameters is sampled (via `rng`, or a fresh `np.random.default_rng()`
-    if not given) and applied identically to every phase -- training only;
+    if not given) and applied identically to every phase,training only;
     leave False for val/test/inference.
 
     `label`: the case's ground-truth lirads_score, when known (training,
     via LiRadsCaseDataset). Cases labeled config.NO_LESION_LABEL have no
-    mask file by design -- there's no target lesion to segment -- so an
+    mask file by design,there's no target lesion to segment,so an
     all-zero mask is used directly rather than attempting to load one. For
     every other label (including when label is unknown, e.g. at inference
     in predict.py/submission/run.py, where a mask is always provided per the
@@ -384,7 +384,7 @@ def compute_max_diameter_mm(mask_path: str) -> float:
     Deterministic (non-learned) stand-in for train_metadata.csv's
     max_diameter_mm column, used by predict_clinical.py to fill that one
     field of a synthesized clinical row (see config's "Clinical feature
-    prediction" section -- the other 8 fields come from
+    prediction" section,the other 8 fields come from
     model.ClinicalPredictorNet instead, since geometry alone can't recover
     them). Standard LI-RADS practice measures a lesion's largest diameter on
     the single axial slice showing its greatest extent, so this: for every
@@ -403,7 +403,7 @@ def compute_max_diameter_mm(mask_path: str) -> float:
     vertices of that point set's convex hull (an interior point can never
     be farther from every other point than some hull vertex is), so
     reducing to hull vertices before the pairwise search is exact, not an
-    approximation -- it just avoids an O(pixel_count^2) distance search
+    approximation,it just avoids an O(pixel_count^2) distance search
     over every foreground pixel in a large lesion slice.
     """
     img = nib.load(mask_path)
@@ -428,7 +428,7 @@ def compute_max_diameter_mm(mask_path: str) -> float:
             try:
                 points_mm = points_mm[ConvexHull(points_mm).vertices]
             except QhullError:
-                pass  # collinear/degenerate slice -- fall back to the full point set
+                pass  # collinear/degenerate slice,fall back to the full point set
         diffs = points_mm[:, None, :] - points_mm[None, :, :]
         slice_max = float(np.sqrt((diffs ** 2).sum(axis=-1)).max())
         best_mm = max(best_mm, slice_max)

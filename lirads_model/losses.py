@@ -7,7 +7,7 @@ exactly as much as a prediction of LR-4 on that same case. SORDLoss fixes
 that by softening the one-hot target into a distribution peaked at the
 true rank and decaying with squared rank distance, while keeping the same
 weighted-cross-entropy machinery (and the same call signature) as the
-nn.CrossEntropyLoss(weight=...) it replaces -- see train.py's
+nn.CrossEntropyLoss(weight=...) it replaces,see train.py's
 build_ordinal_criterion().
 """
 
@@ -26,7 +26,7 @@ class SORDLoss(nn.Module):
     For a true rank y, the target distribution over ranks i is
         p_i = softmax_i(-(i - y)**2)
     i.e. a discrete, rank-distance-weighted soft label instead of a
-    one-hot vector -- adjacent ranks get partial credit, ranks further
+    one-hot vector,adjacent ranks get partial credit, ranks further
     away get exponentially less. The loss is the cross entropy between
     the model's predicted softmax and this soft target,
     -sum_i p_i * log_softmax(logits)_i, per-sample-weighted by `weight`
@@ -56,7 +56,7 @@ def corn_loss(
 ) -> torch.Tensor:
     """CORN (Conditional Ordinal Regression for Neural networks; Shi, Cao &
     Raschka, 2021) loss. `logits` has shape (N, num_classes-1): task k's
-    logit is trained -- via plain binary cross entropy -- only on the subset
+    logit is trained,via plain binary cross entropy,only on the subset
     of examples whose true rank is >= k, to predict whether that rank is > k.
     Conditioning each task's training set on the previous tasks' outcome
     (rather than training every task on the full batch, as CORAL does) is
@@ -92,7 +92,7 @@ def corn_probas_from_logits(logits: torch.Tensor) -> torch.Tensor:
     """Converts CORN's (N, num_classes-1) conditional logits into a proper
     per-class probability distribution (N, num_classes), for use anywhere a
     softmax-style distribution over ranks is needed (see soft_qwk below).
-    cum[:, k] = P(rank > k) = prod_{i<=k} sigmoid(logit_i) -- the chained
+    cum[:, k] = P(rank > k) = prod_{i<=k} sigmoid(logit_i),the chained
     conditional probabilities; each class's probability mass is the
     consecutive difference of that cumulative distribution."""
     cum = torch.cumprod(torch.sigmoid(logits), dim=1)  # (N, num_classes-1): P(rank > k)

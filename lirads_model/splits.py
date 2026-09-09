@@ -8,7 +8,7 @@ fixed and the N test sets are disjoint and cover every one of these cases
 exactly once, unlike independent random draws. Within each fold's non-test
 remainder, train/val is a further stratified random split at `val_frac`.
 
-Cases whose label is in `full_inclusion_labels` (LR-1/2/3 by default -- too
+Cases whose label is in `full_inclusion_labels` (LR-1/2/3 by default,too
 few per class to hold out a disjoint test slice from) are instead added to
 *every* fold's train and test sets in full, with a proportional-by-class
 subset (at least one case per class) also added to val. Use `--fold` in
@@ -43,7 +43,7 @@ def _split_case_ids(case_ids: np.ndarray, labels: np.ndarray, val_frac: float, s
         train_ids, val_ids = train_test_split(case_ids, test_size=val_frac, stratify=labels, random_state=seed)
     except ValueError:
         # A class too small to stratify at this fraction (e.g. only 1-2
-        # cases) -- fall back to a plain random split.
+        # cases),fall back to a plain random split.
         train_ids, val_ids = train_test_split(case_ids, test_size=val_frac, random_state=seed)
     return sorted(train_ids.tolist()), sorted(val_ids.tolist())
 
@@ -63,7 +63,7 @@ def _sample_val_ids(case_ids: np.ndarray, labels: np.ndarray, val_frac: float, s
 
 def fold_tagged_path(path: str, fold) -> str:
     """Inserts `_fold{fold}` before the extension, unless it's already there
-    -- so output files (checkpoints, predictions, plots, ...) for different
+   ,so output files (checkpoints, predictions, plots, ...) for different
     folds never collide, whether the base path was left at its default or
     set explicitly."""
     root, ext = os.path.splitext(path)

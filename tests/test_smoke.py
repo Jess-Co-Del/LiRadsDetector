@@ -27,8 +27,8 @@ from lirads_model.model import LiRadsNet, decode_prediction
 
 class TinyBackboneStub(nn.Module):
     """Mimics the real transformers Dinov2WithRegistersModel's callable
-    interface -- forward(pixel_values=...) returning an object with
-    .last_hidden_state, plus a .config.num_register_tokens -- used by
+    interface,forward(pixel_values=...) returning an object with
+    .last_hidden_state, plus a .config.num_register_tokens,used by
     Dinov2SliceEncoder.forward(). Small enough to run instantly on CPU with
     no download. Uses a nonzero register-token count so the CLS/register/
     patch token-splitting logic is actually exercised."""
@@ -99,7 +99,7 @@ def test_pipeline_smoke() -> None:
         label = decode_prediction(logits_cat[0], logits_ord[0])
         assert label in config.VALID_LABELS
 
-        print(f"smoke test OK -- predicted {label!r} from a synthetic 3-phase case")
+        print(f"smoke test OK,predicted {label!r} from a synthetic 3-phase case")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

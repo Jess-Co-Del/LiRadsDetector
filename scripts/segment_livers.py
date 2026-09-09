@@ -5,7 +5,7 @@ preprocessing.find_case_liver_path() (and lesion_transplant.py) expect:
     <case_dir>/annotations/liver.nii.gz
 
 Run this once, offline, wherever the trained model and case data actually
-live (this repo's dev sandbox has access to neither) -- before training with
+live (this repo's dev sandbox has access to neither),before training with
 train.py --transplant, since a recipient case needs a liver mask to
 constrain paste placement to real liver tissue; a case without one on disk
 is simply skipped as a candidate recipient (see
@@ -13,14 +13,14 @@ lesion_transplant.find_recipient_case_id()/transplant_case()).
 
 Uses nnunetv2.inference.predict_from_raw_data.nnUNetPredictor
 (https://github.com/MIC-DKFZ/nnUNet/tree/master/nnunetv2/inference) directly
-against an already-trained model folder -- no retraining/preprocessing step,
+against an already-trained model folder,no retraining/preprocessing step,
 just inference.
 
 The output is saved verbatim (thresholded >0.5 by whatever reads it back,
 see preprocessing.find_case_liver_path()'s callers): if the model is a
 binary liver-vs-background segmenter this is exactly "is this voxel liver",
 but if it's a LiTS-style multi-class model (0=background, 1=liver, 2=tumor)
-every non-background voxel -- tumor included -- currently counts as
+every non-background voxel,tumor included,currently counts as
 liver-plausible for paste placement. Recipients are chosen to be
 config.NO_LESION_LABEL cases (see find_recipient_case_id()) so they
 shouldn't have a real tumor region to begin with, but if you know this model

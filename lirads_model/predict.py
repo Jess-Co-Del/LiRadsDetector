@@ -1,4 +1,5 @@
-"""Shared inference logic used by both local evaluation and submission/run.py,
+"""
+Shared inference logic used by both local evaluation and submission/run.py,
 plus a CLI to predict one or more checkpoints on one fold's held-out test
 split (majority-voted across checkpoints when more than one is given):
 
@@ -12,10 +13,10 @@ split (majority-voted across checkpoints when more than one is given):
 
 By default the test split's clinical/tabular features (aphe/washout/capsule/
 max_diameter_mm) come straight from --metadata_csv's own ground-truth
-columns, same as training -- the "factual" run. Add --clinical_checkpoint
+columns, same as training,the "factual" run. Add --clinical_checkpoint
 (one or more lirads_model.train_clinical.py checkpoints) to instead run
 model.ClinicalPredictorNet over the same images and substitute *its*
-predictions for those columns before predicting -- the "inferred" run,
+predictions for those columns before predicting,the "inferred" run,
 matching what submission/run.py actually sees (the real challenge input
 never supplies clinical metadata; see config's "Clinical feature
 prediction" section). Run the CLI twice, with and without
@@ -99,7 +100,7 @@ def _preprocess_case(case_dir: str, case_id: str, max_slices: int):
 
 
 def _remap_for_submission(label: str) -> str:
-    """The real challenge never scores config.NO_LESION_LABEL -- any final
+    """The real challenge never scores config.NO_LESION_LABEL,any final
     submission prediction must remap it to a valid label instead of emitting
     it literally. See config.NO_LESION_SUBMIT_LABEL."""
     return config.NO_LESION_SUBMIT_LABEL if label == config.NO_LESION_LABEL else label
@@ -228,7 +229,7 @@ def run_inference(model: LiRadsNet, loader: DataLoader, device: torch.device) ->
 def run_inference_tta(model: LiRadsNet, dataset: LiRadsCaseDataset, device: torch.device, tta_views: int) -> pd.DataFrame:
     """
     Per-case (not batched) equivalent of run_inference() that applies TTA to
-    the ordinal decision -- see _forward_with_tta. Not batched because TTA
+    the ordinal decision,see _forward_with_tta. Not batched because TTA
     needs to rebuild each case's tensors several times with independent
     random augmentations, which a single collated DataLoader batch can't
     express. Fine for the case counts a fold's val/test split or a
@@ -307,7 +308,7 @@ def override_clinical_columns(df: pd.DataFrame, data_root: str, clinical_checkpo
     """Returns a copy of `df` (a LiRadsCaseDataset.df-shaped frame: needs a
     case_id column, plus whatever else the caller already has) with its
     aphe/washout/capsule/max_diameter_mm columns replaced by
-    model.ClinicalPredictorNet's own predictions for each row's case_id --
+    model.ClinicalPredictorNet's own predictions for each row's case_id,
     the same image-only path submission/run.py takes, run here instead over
     an evaluation split so its effect on scored predictions can be compared
     directly against the ground-truth-clinical run (see this module's
@@ -316,14 +317,15 @@ def override_clinical_columns(df: pd.DataFrame, data_root: str, clinical_checkpo
     A case_id the generator couldn't produce a row for (see
     predict_clinical.generate_metadata_csv) falls back to the same "no
     clinical info available" representation LiRadsNet's clinical branch
-    already has for a missing case -- NaN aphe (-> encode_clinical_features's
-    "Unknown"), 0 for every binary flag, 0mm diameter -- never the case's
+    already has for a missing case,NaN aphe (-> encode_clinical_features's
+    "Unknown"), 0 for every binary flag, 0mm diameter,never the case's
     real ground-truth values, which would defeat the point of this
     comparison."""
     clinical_models = load_clinical_models(clinical_checkpoint, device, backbone_source)
     case_ids = df["case_id"].astype(str).tolist()
     with tempfile.TemporaryDirectory() as tmp:
         generated = generate_metadata_csv(clinical_models, case_ids, data_root, os.path.join(tmp, "generated_metadata.csv"))
+        generated.to_csv("generated_metadata.csv")
     del clinical_models
 
     generated = generated.set_index(generated["case_id"].astype(str))
@@ -362,7 +364,7 @@ def predict_fold_test_set(
     `clinical_checkpoint`: when given, one or more train_clinical.py
     checkpoints whose image-only predictions replace the test split's
     ground-truth clinical columns before prediction (see
-    override_clinical_columns) -- the "inferred" run described in this
+    override_clinical_columns),the "inferred" run described in this
     module's docstring. None (the default) uses --metadata_csv's own
     ground-truth clinical columns unchanged, same as training.
     """
@@ -428,7 +430,7 @@ def main() -> None:
         help=(
             "one or more train_clinical.py checkpoints; when given, the test split's aphe/washout/"
             "capsule/max_diameter_mm columns are replaced by ClinicalPredictorNet's own image-only "
-            "predictions before predicting (the 'inferred' run -- see this module's docstring), "
+            "predictions before predicting (the 'inferred' run,see this module's docstring), "
             "instead of --metadata_csv's ground-truth clinical columns (the default 'factual' run). "
             "Output filenames get a distinct '_clinical_inferred' tag so the two runs don't overwrite "
             "each other."

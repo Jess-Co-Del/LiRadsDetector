@@ -61,7 +61,7 @@ def main() -> None:
     models = load_models(checkpoint_paths, device, backbone_source="local")
 
     # Clinical metadata never comes with the real challenge input (see this
-    # file's docstring) -- when clinical-predictor checkpoint(s) are bundled,
+    # file's docstring),when clinical-predictor checkpoint(s) are bundled,
     # generate one row per case up front (image-only, independent of the
     # main model(s) above) and save it as its own artifact before touching
     # predict_case_ensemble at all, so a clinical-prediction failure never

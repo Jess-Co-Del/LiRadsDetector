@@ -29,7 +29,7 @@ SPECIAL_LABELS = ["LR-M", "LR-TIV", "No lesion"]
 VALID_LABELS = ORDINAL_LABELS + SPECIAL_LABELS
 
 # "No lesion" cases have no mask file by design (there's no target lesion to
-# segment) -- preprocessing.build_case_tensors uses this to decide when an
+# segment),preprocessing.build_case_tensors uses this to decide when an
 # all-zero mask is expected rather than a load failure.
 NO_LESION_LABEL = "No lesion"
 
@@ -42,7 +42,7 @@ NO_LESION_SUBMIT_LABEL = "LR-1"
 
 # 4-way super-category head: ordinal vs. the three special classes. Note
 # "No lesion" isn't a label the actual AMPLIFAI challenge ever scores (its
-# own evaluate.py only recognizes LR-1..LR-5/LR-M/LR-TIV) -- it's trained
+# own evaluate.py only recognizes LR-1..LR-5/LR-M/LR-TIV),it's trained
 # here purely so the model learns to recognize "no real target lesion"
 # imagery as its own category instead of that signal corrupting the ordinal
 # head (see preprocessing.build_case_tensors's `label` argument). A
@@ -115,7 +115,7 @@ HEAD_DROPOUT = 0.2
 APHE_CATEGORIES = ["Absent", "Non-rim APHE", "Rim APHE", "Unknown"]
 CLINICAL_BINARY_FEATURES = ["washout_venous", "washout_delayed", "capsule_venous", "capsule_delayed"]
 # max_diameter_mm ranges roughly 0-280 in train_metadata.csv (see its
-# per-label breakdown) -- clinical_encoder's first layer is a per-sample
+# per-label breakdown),clinical_encoder's first layer is a per-sample
 # LayerNorm over the whole clinical vector, so a raw mm value would dominate
 # that normalization next to the 0/1 one-hot/binary features. Dividing by
 # this scale first brings it into a comparable ~0-3 range.
@@ -129,13 +129,13 @@ CLINICAL_EMBED_DIM = 64
 # dims straight from the CT images, so submission/run.py can synthesize a
 # full clinical row for LiRadsNet's clinical branch even though the real
 # submission input never supplies one directly (case_id + images + mask
-# only -- see amplifai-codabench/SUBMISSION_GUIDE.md). max_diameter_mm, the
-# 9th dim, isn't predicted by any model -- it's computed deterministically
+# only,see amplifai-codabench/SUBMISSION_GUIDE.md). max_diameter_mm, the
+# 9th dim, isn't predicted by any model,it's computed deterministically
 # from the lesion mask instead (see preprocessing.compute_max_diameter_mm).
 #
 # "Unknown" in APHE_CATEGORIES exists only as encode_clinical_features's
 # placeholder for a *missing ground-truth label* (train_metadata.csv rows
-# with a blank aphe cell) -- it isn't a visual finding, so it's excluded
+# with a blank aphe cell),it isn't a visual finding, so it's excluded
 # from ClinicalPredictorNet's own output space: the model always commits to
 # one of the 3 real categories.
 APHE_PREDICTABLE_CATEGORIES = [c for c in APHE_CATEGORIES if c != "Unknown"]
@@ -170,9 +170,9 @@ AUGMENT_INTENSITY_SCALE_RANGE = (0.9, 1.1)   # multiplicative HU jitter range
 # ── Test-time augmentation (inference only) ──────────────────────────────────
 # predict.predict_case/predict_case_ensemble always decide the category gate
 # (ordinal vs. LR-M/LR-TIV/No lesion) from a single deterministic pass. When
-# that pass says "ordinal", TTA_VIEWS additional forward passes -- each on a
+# that pass says "ordinal", TTA_VIEWS additional forward passes,each on a
 # fresh augmentation.sample_augment_params() view of the same case, reusing
-# the same transforms/probabilities as training -- are averaged in with it to
+# the same transforms/probabilities as training,are averaged in with it to
 # pick the final LR-1..LR-5 index, trading inference cost for a steadier
 # ordinal decision. Never applied to the category gate itself, and never
 # applied at training time. 0 disables TTA (single deterministic pass, the
@@ -187,12 +187,12 @@ AUGMENT_INTENSITY_PROB = 0.5
 # patch) and pastes it into a different recipient case's liver at a random
 # plausible location, alpha-feathering the seam. This multiplies background
 # diversity (surrounding parenchyma, vasculature, noise) per rare lesion while
-# keeping the lesion's own true appearance -- the synthetic case is labeled
+# keeping the lesion's own true appearance,the synthetic case is labeled
 # with the donor's real label, never the recipient's.
 #
 # Placement is constrained to the recipient's own liver, segmented by a
 # pretrained nnUNetv2 model (see scripts/segment_livers.py) rather than
-# approximated -- the segmenter's output is expected at
+# approximated,the segmenter's output is expected at
 # <case_dir>/annotations/liver.nii.gz (find_case_liver_path()), the same
 # per-case layout as the existing lesion mask.
 TRANSPLANT_DONOR_LABELS = ["LR-1", "LR-2", "LR-3", "LR-4"]
@@ -209,8 +209,8 @@ LIVER_SEGMENTATION_PHASE = "DEL"
 
 # ── Anatomy-informed augmentation (training only) ────────────────────────────
 # Locally warps around the case's own lesion segmentation to give the lesion
-# a plausible new shape/size -- capsule-like bulging/indentation of the
-# lesion boundary from breathing or adjacent-tissue distension -- instead of
+# a plausible new shape/size,capsule-like bulging/indentation of the
+# lesion boundary from breathing or adjacent-tissue distension,instead of
 # a generic global affine warp. Adapted from batchgenerators'
 # AnatomyInformedTransform ("Anatomy-informed Data Augmentation for Enhanced
 # Prostate Cancer Detection", MICCAI 2023:
@@ -220,13 +220,13 @@ LIVER_SEGMENTATION_PHASE = "DEL"
 # preprocessing.build_case_tensors_from_volumes) rather than the 2D per-slice
 # stack the other geometric transforms use, since it needs the lesion's real
 # 3D shape to compute the deformation field. Needs only the lesion.nii.gz
-# every case already has -- no liver segmentation required.
+# every case already has,no liver segmentation required.
 ANATOMY_AUGMENT_PROB = 0.25                # per-case probability the deformation is applied at all
 ANATOMY_DILATION_RANGE_VOX = (-20.0, 20.0)  # signed warp magnitude in voxels; negative compresses the lesion inward, positive distends it outward
 # In-plane / slice-thickness voxel spacing ratio, needed to scale the warp's
 # blur/gradient along the slice axis correctly. Volumes here aren't
 # affine-tracked past preprocessing.load_volume (which drops nibabel's
-# affine), so this is a fixed approximation rather than computed per case --
+# affine), so this is a fixed approximation rather than computed per case,
 # tune it to this dataset's typical CT protocol if slices are markedly
 # thicker/thinner than in-plane pixels.
 ANATOMY_SPACING_RATIO = 1.0

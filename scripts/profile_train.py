@@ -2,12 +2,12 @@
 Profiles per-function timing of the actual training iteration loop (fetch a
 batch -> forward -> backward -> optimizer step) that lirads_model.train runs
 every epoch, using cProfile, and writes a readable, sorted summary to a .log
-file -- plus the raw pstats dump for deeper digging with snakeviz/tuna.
+file,plus the raw pstats dump for deeper digging with snakeviz/tuna.
 
 Reuses train.py's own dataset/model/loss-construction code (LiRadsCaseDataset,
 InfiniteDataLoader, LiRadsNet, build_ordinal_criterion, ...) so it profiles
 the real training path, but deliberately skips the per-epoch val/test
-evaluation train.py also runs -- those touch the whole val/test split and
+evaluation train.py also runs,those touch the whole val/test split and
 would dwarf and obscure the training-loop timing this script exists to
 isolate. Point this at whatever's causing a slow training launch (e.g. "2
 hours for 10 batches") to see which function is actually eating the time --
@@ -16,13 +16,13 @@ scipy.ndimage.zoom resample is a likely suspect (see its docstring).
 
 IMPORTANT: run with --num_workers 0 (the default here, unlike train.py's
 default of 2). With num_workers > 0, DataLoader batches are built in worker
-*subprocesses* that cProfile -- which only instruments the current process --
+*subprocesses* that cProfile,which only instruments the current process --
 can't see into, so all that time collapses into a single opaque "waiting for
 worker" frame instead of the actual functions responsible.
 
 Also note: on CUDA, individual forward/backward timings can be misleading,
 since GPU kernels queue asynchronously and cProfile only sees when a Python
-call returns, not when the GPU actually finishes -- per-iteration total time
+call returns, not when the GPU actually finishes,per-iteration total time
 is still accurate (loss.item() below forces a sync every iteration, same as
 train.py's own loop), but time attributed to particular sub-calls inside the
 forward/backward can be off. For a precise CUDA kernel-level breakdown, use
@@ -88,13 +88,13 @@ def main() -> None:
     parser.add_argument(
         "--iterations", type=int, default=5,
         help="number of training iterations to profile (train.py's equivalent is --num_iterations_per_epoch); "
-        "kept small on purpose -- this is meant to characterize where one pass spends its time, not to train",
+        "kept small on purpose,this is meant to characterize where one pass spends its time, not to train",
     )
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_slices", type=int, default=config.MAX_SLICES_PER_CASE)
     parser.add_argument(
         "--num_workers", type=int, default=0,
-        help="0 (default here, unlike train.py's default of 2) so cProfile can see inside __getitem__ -- see module docstring",
+        help="0 (default here, unlike train.py's default of 2) so cProfile can see inside __getitem__,see module docstring",
     )
     parser.add_argument("--use_cnn", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use_clinical", action=argparse.BooleanOptionalAction, default=True)
@@ -125,7 +125,7 @@ def main() -> None:
     )
     if args.num_workers != 0:
         print_to_log(
-            "  WARNING: --num_workers != 0 -- DataLoader batches build in worker subprocesses cProfile "
+            "  WARNING: --num_workers != 0,DataLoader batches build in worker subprocesses cProfile "
             "can't see into, so preprocessing time will collapse into an opaque wait instead of showing "
             "the actual functions responsible. Re-run with --num_workers 0 for meaningful results.",
             log_path,
@@ -175,7 +175,7 @@ def main() -> None:
     def run_iterations() -> float:
         """Mirrors train.py's train()'s per-iteration loop body exactly
         (fetch batch -> forward -> loss -> backward -> step), minus the
-        per-epoch val/test evaluation around it -- see module docstring for
+        per-epoch val/test evaluation around it,see module docstring for
         why that's excluded from the profile."""
         model.train()
         model.backbone.eval()

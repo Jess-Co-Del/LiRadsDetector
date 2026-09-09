@@ -1,5 +1,5 @@
 """
-Trainer of model.ClinicalPredictorNet -- the image-only side model that lets
+Trainer of model.ClinicalPredictorNet,the image-only side model that lets
 submission/run.py synthesize a clinical/tabular feature row for LiRadsNet's
 clinical branch, even though the real submission input never supplies one
 (see config's "Clinical feature prediction" section). Reuses the same
@@ -54,7 +54,7 @@ def evaluate(model: ClinicalPredictorNet, loader: DataLoader, device: torch.devi
     """Returns per-feature precision/recall/f1 (aphe: macro over its 3
     classes; each binary feature: for its positive class) plus a combined
     `score` (mean of aphe macro-f1 and the 4 binary features' f1s) used to
-    pick the best checkpoint -- unweighted across features since none is
+    pick the best checkpoint,unweighted across features since none is
     intrinsically more important than another for the downstream clinical
     vector."""
     model.eval()
@@ -119,7 +119,7 @@ def train(args: argparse.Namespace) -> None:
     )
     print_to_log(
         f"Datasets loaded: train={len(train_ds)} val={len(val_ds)} "
-        f"(config.NO_LESION_LABEL cases excluded -- see ClinicalMetadataDataset)",
+        f"(config.NO_LESION_LABEL cases excluded,see ClinicalMetadataDataset)",
         log_path,
     )
 

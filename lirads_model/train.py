@@ -62,12 +62,12 @@ def build_ordinal_criterion(args: argparse.Namespace, ord_counts: dict, device: 
     """Builds the loss for the ordinal head (LR-1..LR-5) selected by
     --ordinal_loss. All options use the same class weighting (inverse
     frequency over ord_counts). 'ce' and 'sord' both train a plain 5-way
-    softmax head (LiRadsNet(ordinal_head_type="softmax")) -- the only
+    softmax head (LiRadsNet(ordinal_head_type="softmax")),the only
     difference is whether the target is one-hot (ce) or a rank-distance-
     softened distribution (sord, see losses.SORDLoss). 'corn_qwk' instead
     trains a 4-output CORN head (LiRadsNet(ordinal_head_type="corn"), see
     build_ordinal_head_type() below) with L = CORN_loss + --qwk_lambda *
-    (1 - soft_QWK) -- see losses.CornSoftQWKLoss."""
+    (1 - soft_QWK),see losses.CornSoftQWKLoss."""
     weight = compute_class_weights(ord_counts, len(config.ORDINAL_LABELS)).to(device)
     if args.ordinal_loss == "ce":
         return nn.CrossEntropyLoss(weight=weight)
@@ -82,7 +82,7 @@ def build_ordinal_head_type(args: argparse.Namespace) -> str:
     """The ordinal head's output shape depends on --ordinal_loss: 'corn_qwk'
     needs LiRadsNet(ordinal_head_type="corn") (num_classes-1 conditional-
     threshold logits), while 'ce'/'sord' both use the plain "softmax" head
-    (num_classes logits) -- see model.LiRadsNet."""
+    (num_classes logits),see model.LiRadsNet."""
     return "corn" if args.ordinal_loss == "corn_qwk" else "softmax"
 
 
@@ -91,7 +91,7 @@ def make_balanced_sampler(labels) -> WeightedRandomSampler:
     Per-example inverse-frequency weight over the full lirads_score label
     (not just the 4-way cat_idx), so a rare special class like LR-TIV gets
     oversampled relative to a more common one (e.g. LR-M) that happens to
-    share its category bucket -- loss-level class weighting alone can't fix
+    share its category bucket,loss-level class weighting alone can't fix
     this, since with few train iterations per epoch a rare class can simply
     never get drawn
     """
@@ -139,7 +139,7 @@ def train(args: argparse.Namespace) -> None:
     ordinal_only = args.head_mode == "ordinal"
 
     # cat_names is the category head's actual label set, in cat_head's
-    # output order -- normally config.CAT_NAMES (4-way), narrowed to drop
+    # output order,normally config.CAT_NAMES (4-way), narrowed to drop
     # "No lesion" when --no-include_no_lesion. Threaded through
     # LiRadsCaseDataset (label_to_targets) and LiRadsNet (cat_head's width)
     # below so both agree on what each cat_idx means; see model.LiRadsNet's
@@ -154,7 +154,7 @@ def train(args: argparse.Namespace) -> None:
     # (use_cnn/use_clinical/use_cat_head/cat_names) are frozen into its
     # saved weights' shapes and must override whatever
     # --use_cnn/--use_clinical/--head_mode/--include_no_lesion were passed
-    # this time -- resuming with a different architecture would make
+    # this time,resuming with a different architecture would make
     # model.load_state_dict() below fail (or silently mismatch).
     resume_checkpoint = None
     if args.resume:
@@ -169,7 +169,7 @@ def train(args: argparse.Namespace) -> None:
                 print_to_log(
                     "  --resume: overriding --use_cnn/--use_clinical/--head_mode/--include_no_lesion with the "
                     f"checkpoint's own architecture (use_cnn={ckpt_use_cnn}, use_clinical={ckpt_use_clinical}, "
-                    f"use_cat_head={ckpt_use_cat_head}, cat_names={ckpt_cat_names}) -- a model's architecture "
+                    f"use_cat_head={ckpt_use_cat_head}, cat_names={ckpt_cat_names}),a model's architecture "
                     "can't change mid-training.",
                     log_path,
                 )
@@ -180,7 +180,7 @@ def train(args: argparse.Namespace) -> None:
             print_to_log(f"--resume: no checkpoint found at {args.out}; starting fresh.", log_path)
 
     # Unlike use_cnn/use_clinical/use_cat_head above, ordinal_head_type is
-    # *not* forced to match the checkpoint -- --ordinal_loss is meant to be
+    # *not* forced to match the checkpoint,--ordinal_loss is meant to be
     # freely switchable across a --resume (e.g. a soft-QWK/CORN fine-tuning
     # stage on top of a checkpoint trained with plain ce/sord). 'ce' and
     # 'sord' share the same "softmax" head shape, so switching between those
@@ -274,7 +274,7 @@ def train(args: argparse.Namespace) -> None:
         old_type = resume_checkpoint.get("ordinal_head_type", "softmax")
         print_to_log(
             f"  --resume: checkpoint's ordinal head is '{old_type}', this run's --ordinal_loss="
-            f"{args.ordinal_loss!r} needs '{ordinal_head_type}' -- ord_head's output shape differs "
+            f"{args.ordinal_loss!r} needs '{ordinal_head_type}',ord_head's output shape differs "
             "between the two, so it can't be resumed directly. Every other weight (backbone-adjacent "
             "trunk, cat_head, clinical/CNN branches) is still loaded from the checkpoint; only ord_head "
             "starts fresh, and the optimizer/scheduler/epoch counter reset to a fresh run since they're "
@@ -290,12 +290,12 @@ def train(args: argparse.Namespace) -> None:
         if "optimizer_state_dict" in resume_checkpoint:
             optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
         else:
-            print_to_log("  --resume: checkpoint predates optimizer-state saving -- optimizer starts fresh.", log_path)
+            print_to_log("  --resume: checkpoint predates optimizer-state saving,optimizer starts fresh.", log_path)
         if scheduler is not None and resume_checkpoint.get("scheduler_state_dict") is not None:
             try:
                 scheduler.load_state_dict(resume_checkpoint["scheduler_state_dict"])
             except Exception as e:
-                print_to_log(f"  --resume: couldn't restore scheduler state ({e}) -- scheduler starts fresh.", log_path)
+                print_to_log(f"  --resume: couldn't restore scheduler state ({e}),scheduler starts fresh.", log_path)
         start_epoch = resume_checkpoint.get("epoch", 0)
         best_score = resume_checkpoint.get("best_score", -1.0)
         print_to_log(
@@ -322,7 +322,7 @@ def train(args: argparse.Namespace) -> None:
             if ordinal_only:
                 # every case in the batch is ordinal-labeled already (see
                 # LiRadsCaseDataset's ordinal_only filtering), so ord_idx is
-                # always valid -- no masking needed, and there's no cat_head
+                # always valid,no masking needed, and there's no cat_head
                 # / cat_criterion to contribute a loss term.
                 loss = ord_criterion(logits_ord, ord_idx)
             else:
@@ -460,7 +460,7 @@ def main() -> None:
         help=(
             "'dual' (default): the current 4-way category head + 5-way ordinal head, jointly trained on the "
             "full label set (LR-1..5, LR-M, LR-TIV, No lesion). 'ordinal': single-head training on the "
-            "ordinal target alone -- no category head at all, and LR-M/LR-TIV/No lesion cases are dropped "
+            "ordinal target alone,no category head at all, and LR-M/LR-TIV/No lesion cases are dropped "
             "from train/val/test (see LiRadsCaseDataset's ordinal_only), since they have no meaningful "
             "ordinal target and there's no category head left to route them through."
         ),
@@ -470,7 +470,7 @@ def main() -> None:
         help=(
             "include config.NO_LESION_LABEL ('No lesion') cases in train/val/test and its own slot in the "
             "category head (default). --no-include_no_lesion drops those cases from every split and shrinks "
-            "the category head from 4-way (ordinal/LR-M/LR-TIV/No lesion) to 3-way (ordinal/LR-M/LR-TIV) -- "
+            "the category head from 4-way (ordinal/LR-M/LR-TIV/No lesion) to 3-way (ordinal/LR-M/LR-TIV),"
             "see dataset.LiRadsCaseDataset's cat_names. Only meaningful with --head_mode dual: --head_mode "
             "ordinal already drops every special class (LR-M/LR-TIV/No lesion), this one included, since "
             "there's no category head left for any of them to route through."
@@ -482,12 +482,12 @@ def main() -> None:
             "loss for the ordinal head (LR-1..LR-5). 'ce' (default): plain weighted "
             "CrossEntropyLoss over a 5-way softmax head, treating the 5 ranks as unrelated "
             "categories. 'sord': SORD (Soft Ordinal Regression) over that same 5-way softmax "
-            "head -- the one-hot target is replaced with a rank-distance-softened distribution, "
+            "head,the one-hot target is replaced with a rank-distance-softened distribution, "
             "so a near-miss prediction (e.g. LR-3 on a true LR-4) is penalized less than a far "
             "one (e.g. LR-1 on a true LR-4). 'corn_qwk': switches the ordinal head itself to a "
             "4-output CORN (rank-consistent conditional) parameterization and trains it with "
             "L = CORN_loss + --qwk_lambda * (1 - soft_QWK), a differentiable quadratic-weighted-"
-            "kappa term added on top of CORN's per-threshold supervision -- meant as a "
+            "kappa term added on top of CORN's per-threshold supervision,meant as a "
             "fine-tuning stage on top of a checkpoint already stable under 'ce'/'sord' (see "
             "--resume), since it directly targets the challenge's own QWK-based metric. Only "
             "affects the ordinal head; the category head (LR-M/LR-TIV/No lesion vs. ordinal) "
