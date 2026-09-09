@@ -462,7 +462,7 @@ def main() -> None:
     print_to_log(f"saved {len(preds)} predictions to {default_stem}", log_path)
 
     if args.score:
-        test_case_ids = pd.read_csv('/leonardo/home/userexternal/jcondess/LiRadsDetector/val_metadata.csv').case_id.to_list() # load_fold(args.splits_json, args.fold)["test"]
+        test_case_ids = load_fold(args.splits_json, args.fold)["test"]
         gt_ds = LiRadsCaseDataset(args.metadata_csv, args.data_root, args.max_slices, case_ids=test_case_ids)
         with tempfile.TemporaryDirectory() as tmp:
             gt_path = os.path.join(tmp, "gt.csv")

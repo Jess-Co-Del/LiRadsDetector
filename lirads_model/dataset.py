@@ -217,15 +217,23 @@ class ClinicalMetadataDataset(Dataset):
     submission's input never supplies (see config's "Clinical feature
     prediction" section) -- instead of lirads_score.
 
-    config.NO_LESION_LABEL rows are always dropped: there's no target
-    lesion for aphe/washout/capsule to describe, so their clinical columns
-    are meaningless training targets, not just missing ones.
+    config.NO_LESION_LABEL rows are never iterated over as training
+    examples: there's no target lesion for aphe/washout/capsule to
+    describe, so their clinical columns are meaningless training targets,
+    not just missing ones. They're still kept around as candidate
+    lesion-transplant *recipients* (see `transplant` below) -- clean liver
+    background with no lesion of their own is exactly what makes them safe
+    paste targets in the first place.
 
-    No lesion-transplant augmentation, unlike LiRadsCaseDataset:
-    lesion_transplant.transplant_case swaps in a donor's lesion but this
-    dataset would still attach the recipient row's own aphe/washout/capsule
-    labels to it, describing the wrong lesion. Geometric/intensity
-    augmentation only (`augment`, see preprocessing.build_case_tensors).
+    `transplant`: same lesion-transplant augmentation as LiRadsCaseDataset,
+    for the same config.TRANSPLANT_DONOR_LABELS-eligible rows (LR-1/2/3/4 by
+    default) -- see lesion_transplant.py. When a row is picked as a donor,
+    its own real lesion gets pasted into a different, randomly chosen
+    recipient case's liver; the *donor's* own aphe/washout/capsule values
+    are still the right training target for the resulting synthetic case,
+    since the transplanted lesion tissue is genuinely the donor's, just
+    against a different background -- exactly the same reasoning
+    LiRadsCaseDataset already relies on for the donor's lirads_score.
     """
 
     def __init__(
@@ -235,6 +243,7 @@ class ClinicalMetadataDataset(Dataset):
         max_slices: int = config.MAX_SLICES_PER_CASE,
         case_ids: Optional[Sequence[str]] = None,
         augment: bool = False,
+        transplant: bool = False,
         aphe_categories: Sequence[str] = config.APHE_PREDICTABLE_CATEGORIES,
     ):
         df = pd.read_csv(metadata_csv)
@@ -249,29 +258,62 @@ class ClinicalMetadataDataset(Dataset):
             missing = wanted - set(df["case_id"].astype(str))
             if missing:
                 raise ValueError(f"{len(missing)} case_id(s) from the split not found in {metadata_csv}: {sorted(missing)[:5]}...")
+        # This split's full case pool (config.NO_LESION_LABEL rows included)
+        # -- lesion_transplant.find_recipient_case_id draws from this, since
+        # it prefers exactly those clean-liver rows as recipients. self.df
+        # below (the actual per-__getitem__ training rows) then drops them.
+        self._recipient_pool = df.reset_index(drop=True)
         df = df[df["lirads_score"].str.strip() != config.NO_LESION_LABEL]
         self.df = df.reset_index(drop=True)
         self.data_root = data_root
         self.max_slices = max_slices
         self.augment = augment
+        self.transplant = transplant
         self.aphe_categories = list(aphe_categories)
 
     def __len__(self) -> int:
         return len(self.df)
 
+    def _build_phase_data(self, case_id: str, case_dir: str, label: str) -> dict:
+        """Normally just preprocessing.build_case_tensors() on this case's
+        own files. When self.transplant is on and `label` is one of
+        config.TRANSPLANT_DONOR_LABELS, with probability
+        config.TRANSPLANT_PROB this case instead becomes a lesion *donor*:
+        see this class's docstring. Falls back to this case's own real data
+        if no recipient has a liver mask yet, or none has room for this
+        lesion -- same fallback conditions as LiRadsCaseDataset."""
+        if self.transplant and label in config.TRANSPLANT_DONOR_LABELS:
+            rng = np.random.default_rng()
+            if rng.random() < config.TRANSPLANT_PROB:
+                recipient_case_id = lesion_transplant.find_recipient_case_id(self._recipient_pool, case_id, rng)
+                if recipient_case_id is not None:
+                    try:
+                        recipient_dir = _find_case_dir(self.data_root, recipient_case_id)
+                        phase_vols, mask_vol, _ = lesion_transplant.transplant_case(
+                            case_dir, case_id, recipient_dir, recipient_case_id, rng,
+                        )
+                        return preprocessing.build_case_tensors_from_volumes(
+                            phase_vols, mask_vol, self.max_slices, augment=self.augment, rng=rng,
+                        )
+                    except (FileNotFoundError, ValueError):
+                        pass  # no liver mask yet, or no room for this lesion -- fall back below
+
+        phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
+        mask_path = preprocessing.find_case_mask_path(case_dir)
+        return preprocessing.build_case_tensors(phase_paths, mask_path, self.max_slices, augment=self.augment)
+
     def __getitem__(self, idx: int) -> dict:
         row = self.df.iloc[idx]
         case_id = str(row["case_id"])
         case_dir = _find_case_dir(self.data_root, case_id)
-        phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
-        mask_path = preprocessing.find_case_mask_path(case_dir)
-        phase_data = preprocessing.build_case_tensors(
-            phase_paths, mask_path, self.max_slices, augment=self.augment,
-        )
+        label = str(row["lirads_score"]).strip()
+        phase_data = self._build_phase_data(case_id, case_dir, label)
 
         # -1 for a missing/unrecognized aphe label -- masked out of the
         # aphe loss term (see train_clinical.py) rather than trained
-        # against, since there's no real target for those rows.
+        # against, since there's no real target for those rows. Always this
+        # row's own aphe/washout/capsule, whether or not transplant swapped
+        # in a different background -- see this class's docstring.
         aphe = str(row["aphe"]).strip() if pd.notna(row["aphe"]) else None
         aphe_idx = self.aphe_categories.index(aphe) if aphe in self.aphe_categories else -1
         binary_targets = torch.tensor([float(row[c]) for c in config.CLINICAL_BINARY_FEATURES], dtype=torch.float32)

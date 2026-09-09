@@ -111,7 +111,8 @@ def train(args: argparse.Namespace) -> None:
     fold = load_fold(args.splits_json, args.fold)
 
     train_ds = ClinicalMetadataDataset(
-        args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["train"], augment=args.augment,
+        args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["train"],
+        augment=args.augment, transplant=args.transplant,
     )
     val_ds = ClinicalMetadataDataset(
         args.metadata_csv, args.data_root, args.max_slices, case_ids=fold["val"],
@@ -232,6 +233,15 @@ def main() -> None:
     parser.add_argument(
         "--augment", action=argparse.BooleanOptionalAction, default=True,
         help="geometric/intensity augmentation on the training split (see preprocessing.build_case_tensors)",
+    )
+    parser.add_argument(
+        "--transplant", action=argparse.BooleanOptionalAction, default=False,
+        help=(
+            "lesion-transplant augmentation on the training split, for config.TRANSPLANT_DONOR_LABELS "
+            "rows (LR-1/2/3/4 by default) -- see dataset.ClinicalMetadataDataset and lesion_transplant.py. "
+            "Needs scripts/segment_livers.py to have run on the data (recipient placement is constrained "
+            "to the recipient's own segmented liver)."
+        ),
     )
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=4)
