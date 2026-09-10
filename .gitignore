@@ -11,6 +11,7 @@ lirads_model/vendor/dinov2-*
 *.err
 *.out
 *.png
+*.pt
 submit.sh
 
 .venv/
