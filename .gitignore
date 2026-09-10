@@ -10,6 +10,7 @@ lirads_model/vendor/dinov2-*
 *.zip
 *.err
 *.out
+*.png
 submit.sh
 
 .venv/

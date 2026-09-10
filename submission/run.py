@@ -37,7 +37,7 @@ from lirads_model.dataset import encode_clinical_features
 from lirads_model.predict import load_models, predict_case_ensemble
 from lirads_model.predict_clinical import generate_metadata_csv, load_clinical_models
 
-DATA_ROOT = "/leonardo_scratch/fast/EUHPC_D35_139/nnunet_base/nnunet_format/amplifai/batch_001/cases"  #"/app/data/cases"
+DATA_ROOT = "/app/data/cases"
 MODEL_DIR = os.path.join(_HERE, "model")
 CLINICAL_MODEL_DIR = os.path.join(MODEL_DIR, "clinical")
 

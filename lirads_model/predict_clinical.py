@@ -129,7 +129,7 @@ def generate_metadata_csv(
             print(f"  WARNING: clinical-metadata prediction failed for {case_id} ({e}); omitting from {out_path}", file=sys.stderr)
     columns = ["case_id", "aphe"] + config.CLINICAL_BINARY_FEATURES + ["max_diameter_mm"]
     df = pd.DataFrame(rows, columns=columns)
-    df.to_csv(out_path, index=False)
+    #df.to_csv(out_path, index=False)
     print_to_log(f"wrote generated clinical metadata for {len(df)}/{len(case_ids)} case(s) to {out_path}")
     return df
 
