@@ -29,7 +29,7 @@ from . import config, preprocessing
 from .config import print_to_log
 from .backbone import Dinov2SliceEncoder
 from .dataset import _find_case_dir
-from .model import ClinicalPredictorNet
+from .model import ClinicalPredictorNet, compute_backbone_feats
 
 
 def load_clinical_model(checkpoint_path: str, device: torch.device, backbone_source: str = "local") -> ClinicalPredictorNet:
@@ -76,17 +76,26 @@ def predict_case_metadata(
     shares the same output space (see ClinicalPredictorNet's aphe_categories/
     binary_features),unlike predict.predict_case_ensemble's LI-RADS
     majority vote, which exists because different checkpoints there can have
-    different category heads."""
+    different category heads.
+
+    The DINOv2 backbone forward is run once (via any one model's own
+    `backbone` attribute -- every checkpoint's is frozen and identical to
+    the same vendored snapshot, see model.compute_backbone_feats's
+    docstring) and its output shared across every model in `models`,
+    instead of each one separately re-running its own backbone on the same
+    pixel_values."""
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
     phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, max_slices)
+    device = models[0].missing_phase_embed.device
+    backbone_feats = compute_backbone_feats(models[0].backbone, phase_data, device)
 
     aphe_categories = models[0].aphe_categories
     binary_features = models[0].binary_features
     aphe_prob_sum = torch.zeros(len(aphe_categories))
     binary_prob_sum = torch.zeros(len(binary_features))
     for model in models:
-        aphe_logits, binary_logits = model([phase_data])
+        aphe_logits, binary_logits = model.forward_from_backbone_feats([backbone_feats])
         aphe_prob_sum += torch.softmax(aphe_logits[0], dim=0).cpu()
         binary_prob_sum += torch.sigmoid(binary_logits[0]).cpu()
     n = len(models)

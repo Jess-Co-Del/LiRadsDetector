@@ -82,7 +82,7 @@ WINDOW_HIGH = WINDOW_CENTER + WINDOW_WIDTH / 2
 # our own checkpoint's state_dict instead, so no network call is needed.
 DINOV2_MODEL_ID = "facebook/dinov2-large"
 
-DINOV2_LOCAL_DIR = os.path.join(os.path.dirname(__file__), "vendor", "dinov2-large")
+DINOV2_LOCAL_DIR = os.path.join(os.path.dirname(__file__), "vendor", "dinov2-with-registers-large")
 
 PATCH_SIZE = 14
 IMG_SIZE = 224            # lesion crop is resized to this before patch-alignment padding

@@ -43,7 +43,7 @@ from . import config, preprocessing
 from .config import print_to_log
 from .backbone import Dinov2SliceEncoder
 from .dataset import LiRadsCaseDataset, _find_case_dir, collate_cases, encode_clinical_features
-from .model import LiRadsNet, decode_prediction
+from .model import LiRadsNet, compute_backbone_feats, decode_prediction
 from .predict_clinical import generate_metadata_csv, load_clinical_models
 from .splits import fold_tagged_path, load_fold
 
@@ -144,8 +144,14 @@ def _forward_with_tta(
     """
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
+    # Loaded/resampled once and reused for the deterministic pass and every
+    # TTA view below -- load_case_volumes (nibabel load + trilinear resample
+    # of all 4 phases) doesn't depend on augmentation, so redoing it per view
+    # was pure waste; only the per-view crop/resize/augment step
+    # (build_case_tensors_from_volumes) needs to re-run.
+    phase_vols, mask_vol, _ = preprocessing.load_case_volumes(phase_paths, mask_path)
 
-    phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, max_slices)
+    phase_data = preprocessing.build_case_tensors_from_volumes(phase_vols, mask_vol, max_slices)
     logits_cat, logits_ord = model([phase_data], clinical_features)
     print("Lever pred:", case_id, logits_cat, logits_ord)
     logits_cat = logits_cat[0].cpu() if logits_cat is not None else None
@@ -156,8 +162,8 @@ def _forward_with_tta(
         rng = rng if rng is not None else np.random.default_rng()
         ord_logits_sum = logits_ord.clone()
         for _ in range(tta_views):
-            aug_phase_data = preprocessing.build_case_tensors(
-                phase_paths, mask_path, max_slices, augment=True, rng=rng,
+            aug_phase_data = preprocessing.build_case_tensors_from_volumes(
+                phase_vols, mask_vol, max_slices, augment=True, rng=rng,
             )
             aug_logits_cat, aug_logits_ord = model([aug_phase_data], clinical_features)
             print("augmented pred:", aug_logits_cat, aug_logits_ord)
@@ -193,13 +199,63 @@ def predict_case_ensemble(
     tta_views: int = config.TTA_VIEWS,
     clinical_features: Optional[torch.Tensor] = None,
 ) -> str:
-    """Runs every model in `models` on the same case (each with its own TTA
-    pass, see _forward_with_tta) and majority-votes over their decoded
-    predictions. With a single model this is equivalent to predict_case()."""
-    labels = []
+    """Runs every model in `models` on the same case and majority-votes over
+    their decoded predictions (see _forward_with_tta for the single-model
+    equivalent this supersedes for an ensemble of more than one checkpoint).
+
+    Unlike looping _forward_with_tta per model, this loads/resamples the
+    case's CT volumes only once (see its docstring) and additionally runs
+    the DINOv2 backbone only once per view -- the deterministic pass, plus
+    each TTA view -- sharing that single backbone output across every model
+    in `models` instead of recomputing it per checkpoint. This is exact, not
+    an approximation: every checkpoint's backbone is frozen and identical to
+    the same vendored pretrained snapshot (see model.compute_backbone_feats's
+    docstring for the invariant this relies on), so only the per-model
+    pooling/head work downstream of the backbone actually differs. Each
+    model still decides its own category gate off that shared backbone
+    output and only TTA-averages its own ordinal logits when its own gate
+    says "ordinal", same as _forward_with_tta. With a single model this
+    produces the same predictions as predict_case(), modulo TTA views now
+    coming from one shared augmented-view sequence instead of a fresh
+    np.random.default_rng() per model -- immaterial to the TTA-averaged
+    result, which was always noise-averaging over random views either way.
+    """
+    phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
+    mask_path = preprocessing.find_case_mask_path(case_dir)
+    phase_vols, mask_vol, _ = preprocessing.load_case_volumes(phase_paths, mask_path)
+    shared_backbone = models[0].backbone
+
+    phase_data = preprocessing.build_case_tensors_from_volumes(phase_vols, mask_vol, max_slices)
+    backbone_feats = compute_backbone_feats(shared_backbone, phase_data, device)
+
+    state = []
     for model in models:
-        logits_cat, logits_ord = _forward_with_tta(model, case_dir, case_id, max_slices, tta_views, clinical_features)
-        labels.append(decode_prediction(logits_cat, logits_ord, model.ordinal_head_type, model.cat_names))
+        logits_cat, logits_ord = model.forward_from_backbone_feats([backbone_feats], clinical_features)
+        logits_cat = logits_cat[0].cpu() if logits_cat is not None else None
+        logits_ord = logits_ord[0].cpu()
+        is_ordinal = logits_cat is None or model.cat_names[int(torch.argmax(logits_cat).item())] == "ordinal"
+        state.append({"model": model, "logits_cat": logits_cat, "ord_sum": logits_ord.clone(), "is_ordinal": is_ordinal})
+
+    if tta_views > 0 and any(s["is_ordinal"] for s in state):
+        rng = np.random.default_rng()
+        for _ in range(tta_views):
+            aug_phase_data = preprocessing.build_case_tensors_from_volumes(
+                phase_vols, mask_vol, max_slices, augment=True, rng=rng,
+            )
+            aug_backbone_feats = compute_backbone_feats(shared_backbone, aug_phase_data, device)
+            for s in state:
+                if not s["is_ordinal"]:
+                    continue
+                _, aug_logits_ord = s["model"].forward_from_backbone_feats([aug_backbone_feats], clinical_features)
+                s["ord_sum"] = s["ord_sum"] + aug_logits_ord[0].cpu()
+        for s in state:
+            if s["is_ordinal"]:
+                s["ord_sum"] = s["ord_sum"] / (tta_views + 1)
+
+    labels = [
+        decode_prediction(s["logits_cat"], s["ord_sum"], s["model"].ordinal_head_type, s["model"].cat_names)
+        for s in state
+    ]
     return _remap_for_submission(majority_vote(labels))
 
 

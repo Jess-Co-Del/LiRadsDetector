@@ -13,6 +13,47 @@ from .losses import corn_label_from_logits
 
 PhaseData = Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
 
+# The backbone-already-applied counterpart of PhaseData: (patch_tokens,
+# cls_token, mask_grids, slice_weights, volume) for a phase that was present,
+# or None for a missing one. Produced once per case/view by
+# compute_backbone_feats() and consumed by LiRadsNet/ClinicalPredictorNet's
+# *_from_backbone_feats methods below -- see compute_backbone_feats's
+# docstring for why this exists (sharing one backbone forward pass across an
+# ensemble of checkpoints that all carry the same frozen backbone).
+BackboneFeats = Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
+
+
+def compute_backbone_feats(
+    backbone: Dinov2SliceEncoder, phase_data: Dict[str, PhaseData], device: torch.device,
+) -> Dict[str, BackboneFeats]:
+    """Runs `backbone` once per phase present in `phase_data` and packages
+    its (patch_tokens, cls_token) output alongside that phase's
+    mask_grids/slice_weights/volume (moved to `device`), keyed by phase name
+    -- a missing phase stays None. Every LiRadsNet/ClinicalPredictorNet
+    checkpoint carries its own backbone instance, but all of them are frozen
+    (requires_grad=False, never in the optimizer -- see train.py's
+    trainable_params) and loaded from the same vendored DINOv2 snapshot, so
+    their backbone weights are always numerically identical to each other
+    and to the original pretrained snapshot; only the per-model pooling/head
+    work downstream of the backbone actually differs between checkpoints.
+    That makes it safe and exact (not an approximation) for an ensemble of
+    such checkpoints to call this once, with any one of their own `backbone`
+    attributes, and feed the result to every model's *_from_backbone_feats
+    method instead of each one separately re-running its own backbone
+    forward on the same pixel_values -- see predict.predict_case_ensemble
+    and predict_clinical.predict_case_metadata. This invariant breaks (and
+    this sharing would silently become wrong) if a future training run ever
+    unfreezes or otherwise diverges one checkpoint's backbone from another's."""
+    feats = {}
+    for phase, data in phase_data.items():
+        if data is None:
+            feats[phase] = None
+            continue
+        pixel_values, mask_grids, slice_weights, volume = data
+        patch_tokens, cls_token = backbone(pixel_values.to(device))
+        feats[phase] = (patch_tokens, cls_token, mask_grids.to(device), slice_weights.to(device), volume.to(device))
+    return feats
+
 
 class PhaseVolumeCNN(nn.Module):
     """
@@ -143,8 +184,15 @@ class LiRadsNet(nn.Module):
         ord_out_dim = len(config.ORDINAL_LABELS) - 1 if self.ordinal_head_type == "corn" else len(config.ORDINAL_LABELS)
         self.ord_head = nn.Linear(hidden2, ord_out_dim)
 
-    def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
-        patch_tokens, cls_token = self.backbone(pixel_values)  # (S,N,D), (S,D)
+    def _pool_phase(
+        self, patch_tokens: torch.Tensor, cls_token: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        """Mask-guided pooling of one phase's already-backbone-encoded
+        tokens into a single (2D,) feature -- the part of encode_phase that
+        doesn't touch the backbone, split out so it can run either straight
+        off a fresh backbone forward (encode_phase) or off a backbone
+        forward computed once and shared across an ensemble
+        (encode_case_from_backbone_feats/compute_backbone_feats)."""
         S = patch_tokens.shape[0]
         patch_tokens = patch_tokens.view(S, self.grid_size, self.grid_size, self.embed_dim)
 
@@ -156,6 +204,10 @@ class LiRadsNet(nn.Module):
         phase_masked = (masked_pooled * slice_w.unsqueeze(-1)).sum(dim=0)  # (D,)
         phase_cls = (cls_token * slice_w.unsqueeze(-1)).sum(dim=0)  # (D,)
         return torch.cat([phase_masked, phase_cls], dim=0)  # (2D,)
+
+    def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
+        patch_tokens, cls_token = self.backbone(pixel_values)  # (S,N,D), (S,D)
+        return self._pool_phase(patch_tokens, cls_token, mask_grids, slice_weights)
 
     def encode_phase_cnn(self, volume: torch.Tensor, phase_idx: int) -> torch.Tensor:
         """volume: (S, H, W) single-channel slice stack -> (cnn_out_size**2,)"""
@@ -181,6 +233,30 @@ class LiRadsNet(nn.Module):
                     feats.append(dinov2_feat)
         return torch.cat(feats, dim=0)  # (phase_feat_dim * n_phases,)
 
+    def encode_case_from_backbone_feats(self, backbone_feats: Dict[str, "BackboneFeats"]) -> torch.Tensor:
+        """Same as encode_case, but `backbone_feats` (see
+        compute_backbone_feats) already carries each phase's backbone
+        output instead of raw pixel_values, so this never touches
+        self.backbone -- lets an ensemble of checkpoints share one backbone
+        forward pass per case/view (see predict.predict_case_ensemble)."""
+        device = self.missing_phase_embed.device
+        feats = []
+        for i, phase in enumerate(self.phase_names):
+            data = backbone_feats.get(phase)
+            if data is None:
+                feats.append(self.missing_phase_embed[i])
+            else:
+                patch_tokens, cls_token, mask_grids, slice_weights, volume = data
+                dinov2_feat = self._pool_phase(
+                    patch_tokens.to(device), cls_token.to(device), mask_grids.to(device), slice_weights.to(device),
+                )
+                if self.use_cnn:
+                    cnn_feat = self.encode_phase_cnn(volume.to(device), i)
+                    feats.append(torch.cat([dinov2_feat, cnn_feat], dim=0))
+                else:
+                    feats.append(dinov2_feat)
+        return torch.cat(feats, dim=0)  # (phase_feat_dim * n_phases,)
+
     def encode_clinical(self, clinical_features: Optional[torch.Tensor], batch_size: int) -> torch.Tensor:
         device = self.missing_clinical_embed.device
         if clinical_features is None:
@@ -195,6 +271,22 @@ class LiRadsNet(nn.Module):
         case_feats = torch.stack([self.encode_case(pd) for pd in batch_phase_data], dim=0)
         if self.use_clinical:
             clinical_feats = self.encode_clinical(clinical_features, len(batch_phase_data))
+            case_feats = torch.cat([case_feats, clinical_feats], dim=1)
+        h = self.head(case_feats)
+        logits_cat = self.cat_head(h) if self.use_cat_head else None
+        return logits_cat, self.ord_head(h)
+
+    def forward_from_backbone_feats(
+        self,
+        batch_backbone_feats: List[Dict[str, "BackboneFeats"]],
+        clinical_features: Optional[torch.Tensor] = None,
+    ) -> Tuple[Optional[torch.Tensor], torch.Tensor]:
+        """Same as forward(), but each batch element's images have already
+        been run through the (shared, frozen) backbone -- see
+        encode_case_from_backbone_feats/compute_backbone_feats."""
+        case_feats = torch.stack([self.encode_case_from_backbone_feats(bf) for bf in batch_backbone_feats], dim=0)
+        if self.use_clinical:
+            clinical_feats = self.encode_clinical(clinical_features, len(batch_backbone_feats))
             case_feats = torch.cat([case_feats, clinical_feats], dim=1)
         h = self.head(case_feats)
         logits_cat = self.cat_head(h) if self.use_cat_head else None
@@ -273,11 +365,13 @@ class ClinicalPredictorNet(nn.Module):
         self.aphe_head = nn.Linear(hidden2, len(self.aphe_categories))
         self.binary_head = nn.Linear(hidden2, len(self.binary_features))
 
-    # encode_phase/encode_phase_cnn/encode_case: identical to LiRadsNet's
-    # own (see there for the "why" of each step),duplicated, see this
-    # class's docstring.
-    def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
-        patch_tokens, cls_token = self.backbone(pixel_values)  # (S,N,D), (S,D)
+    # _pool_phase/encode_phase/encode_phase_cnn/encode_case/
+    # encode_case_from_backbone_feats: identical to LiRadsNet's own (see
+    # there for the "why" of each step) -- duplicated, see this class's
+    # docstring.
+    def _pool_phase(
+        self, patch_tokens: torch.Tensor, cls_token: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor,
+    ) -> torch.Tensor:
         S = patch_tokens.shape[0]
         patch_tokens = patch_tokens.view(S, self.grid_size, self.grid_size, self.embed_dim)
 
@@ -289,6 +383,10 @@ class ClinicalPredictorNet(nn.Module):
         phase_masked = (masked_pooled * slice_w.unsqueeze(-1)).sum(dim=0)  # (D,)
         phase_cls = (cls_token * slice_w.unsqueeze(-1)).sum(dim=0)  # (D,)
         return torch.cat([phase_masked, phase_cls], dim=0)  # (2D,)
+
+    def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
+        patch_tokens, cls_token = self.backbone(pixel_values)  # (S,N,D), (S,D)
+        return self._pool_phase(patch_tokens, cls_token, mask_grids, slice_weights)
 
     def encode_phase_cnn(self, volume: torch.Tensor, phase_idx: int) -> torch.Tensor:
         """volume: (S, H, W) single-channel slice stack -> (cnn_out_size**2,)"""
@@ -314,10 +412,40 @@ class ClinicalPredictorNet(nn.Module):
                     feats.append(dinov2_feat)
         return torch.cat(feats, dim=0)  # (phase_feat_dim * n_phases,)
 
+    def encode_case_from_backbone_feats(self, backbone_feats: Dict[str, "BackboneFeats"]) -> torch.Tensor:
+        device = self.missing_phase_embed.device
+        feats = []
+        for i, phase in enumerate(self.phase_names):
+            data = backbone_feats.get(phase)
+            if data is None:
+                feats.append(self.missing_phase_embed[i])
+            else:
+                patch_tokens, cls_token, mask_grids, slice_weights, volume = data
+                dinov2_feat = self._pool_phase(
+                    patch_tokens.to(device), cls_token.to(device), mask_grids.to(device), slice_weights.to(device),
+                )
+                if self.use_cnn:
+                    cnn_feat = self.encode_phase_cnn(volume.to(device), i)
+                    feats.append(torch.cat([dinov2_feat, cnn_feat], dim=0))
+                else:
+                    feats.append(dinov2_feat)
+        return torch.cat(feats, dim=0)  # (phase_feat_dim * n_phases,)
+
     def forward(self, batch_phase_data: List[Dict[str, PhaseData]]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns (aphe_logits, binary_logits): (B, len(aphe_categories))
         and (B, len(binary_features))."""
         case_feats = torch.stack([self.encode_case(pd) for pd in batch_phase_data], dim=0)
+        h = self.head(case_feats)
+        return self.aphe_head(h), self.binary_head(h)
+
+    def forward_from_backbone_feats(
+        self, batch_backbone_feats: List[Dict[str, "BackboneFeats"]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Same as forward(), but off backbone output already computed once
+        and shared across the clinical-predictor ensemble -- see
+        encode_case_from_backbone_feats/compute_backbone_feats and
+        predict_clinical.predict_case_metadata."""
+        case_feats = torch.stack([self.encode_case_from_backbone_feats(bf) for bf in batch_backbone_feats], dim=0)
         h = self.head(case_feats)
         return self.aphe_head(h), self.binary_head(h)
 

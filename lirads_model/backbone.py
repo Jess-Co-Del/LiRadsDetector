@@ -41,7 +41,14 @@ class Dinov2SliceEncoder(nn.Module):
         # transformers' Dinov2WithRegistersModel interpolates the position
         # embeddings to the input resolution internally, so no custom
         # resolution-aware interpolation is needed here.
-        last_hidden_state = self.backbone(pixel_values=pixel_values).last_hidden_state
+        #
+        # fp16 autocast is safe here: frozen backbone, no_grad, inference
+        # only. Cast back to float32 immediately after so every downstream
+        # consumer (masked pooling, the 3D-CNN branch, the heads) keeps
+        # seeing the same dtype as before this was added.
+        with torch.autocast(device_type=pixel_values.device.type, dtype=torch.float16, enabled=pixel_values.is_cuda):
+            last_hidden_state = self.backbone(pixel_values=pixel_values).last_hidden_state
+        last_hidden_state = last_hidden_state.float()
         num_register_tokens = self.backbone.config.num_register_tokens if hasattr(self.backbone.config, 'num_register_tokens') else 0
         # token layout is [CLS, reg_1..reg_R, patch_1..patch_N]
         return last_hidden_state[:, 1 + num_register_tokens :], last_hidden_state[:, 0]
