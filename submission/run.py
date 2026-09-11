@@ -50,7 +50,7 @@ CLINICAL_MODEL_DIR = os.path.join(MODEL_DIR, "clinical")
 
 
 def _log(msg: str) -> None:
-    print(f"{datetime.fromtimestamp(time())}: {msg}")
+    print(f"{datetime.fromtimestamp(time())}: {msg}", flush=True)
 
 
 def main() -> None:
