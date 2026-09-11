@@ -9,6 +9,7 @@ import nibabel as nib
 import numpy as np
 import torch
 from scipy.spatial import ConvexHull, QhullError
+from scipy.spatial.distance import pdist
 
 from . import augmentation, config
 
@@ -421,10 +422,28 @@ def compute_max_diameter_mm(mask_path: str) -> float:
             continue
         if len(points_mm) >= 4:
             try:
-                points_mm = points_mm[ConvexHull(points_mm).vertices]
+                # qhull_options="QJ": joggles the input points by a
+                # negligible amount before computing the hull, which avoids
+                # spurious QhullError on near-degenerate (thin/collinear-ish)
+                # lesion slices -- real CT lesion masks hit this often
+                # enough that, without it, the except branch below (an
+                # O(pixel_count^2) search over every foreground pixel
+                # instead of just the hull's handful of vertices) has been
+                # measured taking 60-100+ seconds on a single real case,
+                # entirely because of one or two slices' shape, versus
+                # ~0.2s for a case that never hits it. The joggle perturbs
+                # the hull by well under a pixel, immaterial at mm scale.
+                points_mm = points_mm[ConvexHull(points_mm, qhull_options="QJ").vertices]
             except QhullError:
-                pass  # collinear/degenerate slice,fall back to the full point set
-        diffs = points_mm[:, None, :] - points_mm[None, :, :]
-        slice_max = float(np.sqrt((diffs ** 2).sum(axis=-1)).max())
+                pass  # truly degenerate even joggled,fall back below
+        if len(points_mm) > 500:
+            # Residual safety net for the rare case the joggle still isn't
+            # enough: pdist computes the same exact all-pairs max distance
+            # without materializing the full (n,n,2) broadcast array the
+            # naive approach below would for a large, unreduced point set.
+            slice_max = float(pdist(points_mm).max())
+        else:
+            diffs = points_mm[:, None, :] - points_mm[None, :, :]
+            slice_max = float(np.sqrt((diffs ** 2).sum(axis=-1)).max())
         best_mm = max(best_mm, slice_max)
     return round(best_mm, 1)
