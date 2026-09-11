@@ -57,7 +57,7 @@ from lirads_model.dataset import encode_clinical_features
 from lirads_model.model import ClinicalPredictorNet, LiRadsNet
 
 
-def _make_synthetic_case(case_dir: str, case_id: str, shape=(64, 64, 40)) -> None:
+def _make_synthetic_case(case_dir: str, case_id: str, shape=(512, 512, 40)) -> None:
     """Same synthetic-case fixture as tests/test_smoke.py -- see there for
     why it's synthetic rather than real patient data; this test's job is to
     time the real model's inference path, not to validate prediction
@@ -72,7 +72,7 @@ def _make_synthetic_case(case_dir: str, case_id: str, shape=(64, 64, 40)) -> Non
     affine = np.eye(4)
 
     mask = np.zeros(shape, dtype=np.float32)
-    mask[20:36, 20:36, 12:26] = 1.0  # synthetic lesion spanning 14 slices
+    mask[20:36, 20:36, 19:26] = 1.0  # synthetic lesion spanning 14 slices
     nib.save(nib.Nifti1Image(mask, affine), os.path.join(ann_dir, "lesion.nii.gz"))
 
     for phase in config.PHASE_NAMES:
