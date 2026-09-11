@@ -247,14 +247,31 @@ def predict_case_ensemble(
     generate_metadata_csv already skipped a failed case rather than
     raising).
     """
+    # Diagnostic per-case timing breakdown (preprocessing/IO vs the shared
+    # backbone forward vs per-model head compute) -- temporary
+    # instrumentation to find the next optimization target now that the
+    # backbone forward is already shared across the whole ensemble +
+    # clinical stage (see this function's docstring); safe to leave in,
+    # it only adds a print_to_log call per case, never changes what's
+    # computed or returned. Remove once the next bottleneck is identified.
+    _t_preprocess = 0.0
+    _t_backbone = 0.0
+    _t_head = 0.0
+
+    _t0 = time.perf_counter()
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
     phase_vols, mask_vol, _ = preprocessing.load_case_volumes(phase_paths, mask_path)
     shared_backbone = models[0].backbone
 
     phase_data = preprocessing.build_case_tensors_from_volumes(phase_vols, mask_vol, max_slices)
-    backbone_feats = compute_backbone_feats(shared_backbone, phase_data, device)
+    _t_preprocess += time.perf_counter() - _t0
 
+    _t0 = time.perf_counter()
+    backbone_feats = compute_backbone_feats(shared_backbone, phase_data, device)
+    _t_backbone += time.perf_counter() - _t0
+
+    _t0 = time.perf_counter()
     clinical_row = None
     if clinical_models:
         try:
@@ -274,19 +291,30 @@ def predict_case_ensemble(
         logits_ord = logits_ord[0].cpu()
         is_ordinal = logits_cat is None or model.cat_names[int(torch.argmax(logits_cat).item())] == "ordinal"
         state.append({"model": model, "logits_cat": logits_cat, "ord_sum": logits_ord.clone(), "is_ordinal": is_ordinal})
+    _t_head += time.perf_counter() - _t0
 
+    n_tta_views_run = 0
     if tta_views > 0 and any(s["is_ordinal"] for s in state):
         rng = np.random.default_rng()
         for _ in range(tta_views):
+            _t0 = time.perf_counter()
             aug_phase_data = preprocessing.build_case_tensors_from_volumes(
                 phase_vols, mask_vol, max_slices, augment=True, rng=rng,
             )
+            _t_preprocess += time.perf_counter() - _t0
+
+            _t0 = time.perf_counter()
             aug_backbone_feats = compute_backbone_feats(shared_backbone, aug_phase_data, device)
+            _t_backbone += time.perf_counter() - _t0
+
+            _t0 = time.perf_counter()
             for s in state:
                 if not s["is_ordinal"]:
                     continue
                 _, aug_logits_ord = s["model"].forward_from_backbone_feats([aug_backbone_feats], clinical_features)
                 s["ord_sum"] = s["ord_sum"] + aug_logits_ord[0].cpu()
+            _t_head += time.perf_counter() - _t0
+            n_tta_views_run += 1
         for s in state:
             if s["is_ordinal"]:
                 s["ord_sum"] = s["ord_sum"] / (tta_views + 1)
@@ -295,6 +323,15 @@ def predict_case_ensemble(
         decode_prediction(s["logits_cat"], s["ord_sum"], s["model"].ordinal_head_type, s["model"].cat_names)
         for s in state
     ]
+
+    _t_total = _t_preprocess + _t_backbone + _t_head
+    print_to_log(
+        f"  [timing] {case_id}: total={_t_total:.2f}s "
+        f"preprocess={_t_preprocess:.2f}s backbone={_t_backbone:.2f}s head={_t_head:.2f}s "
+        f"({len(models)} model(s), {n_tta_views_run}/{tta_views} TTA view(s) run, "
+        f"clinical={'yes' if clinical_models else 'no'})"
+    )
+
     return _remap_for_submission(majority_vote(labels)), clinical_row
 
 
