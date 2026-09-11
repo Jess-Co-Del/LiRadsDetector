@@ -123,7 +123,7 @@ def predict_case_metadata(
     the same vendored snapshot, see model.compute_backbone_feats's
     docstring) and its output shared across every model in `models`,
     instead of each one separately re-running its own backbone on the same
-    pixel_values. Standalone entry point (own preprocessing + backbone
+    volume. Standalone entry point (own preprocessing + backbone
     pass) for callers that don't already have backbone_feats for this case
     -- see predict_case_metadata_from_backbone_feats for the version that
     reuses a pass computed elsewhere."""

@@ -137,10 +137,6 @@ def _window_normalize(slice2d: torch.Tensor) -> torch.Tensor:
     return (clipped - config.WINDOW_LOW) / (config.WINDOW_HIGH - config.WINDOW_LOW)
 
 
-_IMAGENET_MEAN = torch.tensor(config.IMAGENET_MEAN, dtype=torch.float32)[:, None, None]
-_IMAGENET_STD = torch.tensor(config.IMAGENET_STD, dtype=torch.float32)[:, None, None]
-
-
 def prepare_phase_tensors(
     volume: torch.Tensor,
     mask: torch.Tensor,
@@ -148,12 +144,18 @@ def prepare_phase_tensors(
     augment_params: Optional[dict] = None,
 ):
     """
-    Returns (pixel_values[S,3,H,W], mask_grids[S,grid,grid], slice_weights[S],
-    volume[S,IMG_SIZE,IMG_SIZE]). `volume` is the same windowed-normalized
-    lesion crop as pixel_values, but single-channel and unpadded (no
-    Imagenet normalization, no patch-alignment padding, no pseudo-RGB),fed
-    to the per-phase 3D CNN as a genuine (1, S, H, W) volume rather than S
-    independent 2D images.
+    Returns (mask_grids[S,grid,grid], slice_weights[S],
+    volume[S,IMG_SIZE,IMG_SIZE]). `volume` is the windowed-normalized (to
+    [0,1]) lesion crop, single-channel and unpadded, fed both to
+    backbone.Dinov2SliceEncoder (which pads to its own patch-multiple input
+    size, replicates to pseudo-RGB, and applies ImageNet normalization
+    internally -- that's backbone-specific plumbing, not a property of the
+    case data, so it doesn't belong here) and directly to the per-phase 3D
+    CNN as a genuine (1, S, H, W) volume rather than S independent 2D
+    images. The two branches used to each get their own separately padded/
+    normalized copy of this same image; since only DINOv2 needs the RGB/
+    ImageNet-normalized version, that conversion now happens inside the
+    backbone wrapper instead of being precomputed for both here.
 
     `volume`/`mask` are torch.Tensor,every operation in this function
     (slicing, cropping, resizing, padding, normalizing, augmenting) runs as
@@ -198,7 +200,7 @@ def prepare_phase_tensors(
         mask_stack = torch.clamp(mask_stack, 0.0, 1.0)
         img_stack = augmentation.apply_intensity(img_stack, augment_params)
 
-    pixel_values, mask_grids, volume_slices = [], [], []
+    mask_grids, volume_slices = [], []
 
     for img_resized, mask_resized in zip(img_stack, mask_stack):
         # Windowed-normalize before padding so the pad value (0.0) means "at
@@ -207,22 +209,15 @@ def prepare_phase_tensors(
         img_norm = _window_normalize(img_resized).float()
         volume_slices.append(img_norm)
 
-        img_padded = _pad_to(img_norm, config.PADDED_SIZE, value=0.0)
         mask_padded = _pad_to(mask_resized, config.PADDED_SIZE, value=0.0)
-
-        chw = img_padded[None, :, :].repeat(3, 1, 1)
-        chw = (chw - _IMAGENET_MEAN) / _IMAGENET_STD
-        pixel_values.append(chw)
-
         block = config.PADDED_SIZE // config.GRID_SIZE
         grid = mask_padded.reshape(config.GRID_SIZE, block, config.GRID_SIZE, block).mean(dim=(1, 3))
         mask_grids.append(grid > 0.3)
 
-    pixel_values_t = torch.stack(pixel_values).float()
     mask_grids_t = torch.stack(mask_grids).float()
     weights_t = torch.stack(weights).float()
     volume_t = torch.stack(volume_slices).float()
-    return pixel_values_t, mask_grids_t, weights_t, volume_t
+    return mask_grids_t, weights_t, volume_t
 
 
 def load_case_volumes(
@@ -332,7 +327,7 @@ def build_case_tensors(
     """
     phase_paths: {"ART": path_or_None, "VEN": ..., "DEL": ..., "DRY": ...}.
 
-    Returns {phase_name: (pixel_values, mask_grids, slice_weights, volume) or None}.
+    Returns {phase_name: (mask_grids, slice_weights, volume) or None}.
 
     `augment`: when True, one set of random rotation/zoom/flip/intensity
     parameters is sampled (via `rng`, or a fresh `np.random.default_rng()`

@@ -79,12 +79,10 @@ def test_pipeline_smoke() -> None:
         phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, max_slices=8)
 
         for phase in config.PHASE_NAMES:
-            pixel_values, mask_grids, slice_weights, volume = phase_data[phase]
-            assert pixel_values.shape[1:] == (3, config.PADDED_SIZE, config.PADDED_SIZE)
-            assert pixel_values.shape[0] == 8  # lesion_slice_indices always returns exactly max_slices
+            mask_grids, slice_weights, volume = phase_data[phase]
+            assert volume.shape == (8, config.IMG_SIZE, config.IMG_SIZE)  # lesion_slice_indices always returns exactly max_slices
             assert mask_grids.shape[1:] == (config.GRID_SIZE, config.GRID_SIZE)
-            assert slice_weights.shape[0] == pixel_values.shape[0]
-            assert volume.shape == (pixel_values.shape[0], config.IMG_SIZE, config.IMG_SIZE)
+            assert slice_weights.shape[0] == volume.shape[0]
 
         backbone = Dinov2SliceEncoder(TinyBackboneStub())
         model = LiRadsNet(backbone)

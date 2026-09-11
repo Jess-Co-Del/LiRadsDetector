@@ -11,7 +11,7 @@ from . import config
 from .backbone import Dinov2SliceEncoder
 from .losses import corn_label_from_logits
 
-PhaseData = Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]
+PhaseData = Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
 
 # The backbone-already-applied counterpart of PhaseData: (patch_tokens,
 # cls_token, mask_grids, slice_weights, volume) for a phase that was present,
@@ -40,7 +40,7 @@ def compute_backbone_feats(
     such checkpoints to call this once, with any one of their own `backbone`
     attributes, and feed the result to every model's *_from_backbone_feats
     method instead of each one separately re-running its own backbone
-    forward on the same pixel_values -- see predict.predict_case_ensemble
+    forward on the same volume -- see predict.predict_case_ensemble
     and predict_clinical.predict_case_metadata. This invariant breaks (and
     this sharing would silently become wrong) if a future training run ever
     unfreezes or otherwise diverges one checkpoint's backbone from another's."""
@@ -49,9 +49,10 @@ def compute_backbone_feats(
         if data is None:
             feats[phase] = None
             continue
-        pixel_values, mask_grids, slice_weights, volume = data
-        patch_tokens, cls_token = backbone(pixel_values.to(device))
-        feats[phase] = (patch_tokens, cls_token, mask_grids.to(device), slice_weights.to(device), volume.to(device))
+        mask_grids, slice_weights, volume = data
+        volume = volume.to(device)
+        patch_tokens, cls_token = backbone(volume)
+        feats[phase] = (patch_tokens, cls_token, mask_grids.to(device), slice_weights.to(device), volume)
     return feats
 
 
@@ -205,8 +206,8 @@ class LiRadsNet(nn.Module):
         phase_cls = (cls_token * slice_w.unsqueeze(-1)).sum(dim=0)  # (D,)
         return torch.cat([phase_masked, phase_cls], dim=0)  # (2D,)
 
-    def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
-        patch_tokens, cls_token = self.backbone(pixel_values)  # (S,N,D), (S,D)
+    def encode_phase(self, volume: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
+        patch_tokens, cls_token = self.backbone(volume)  # (S,N,D), (S,D)
         return self._pool_phase(patch_tokens, cls_token, mask_grids, slice_weights)
 
     def encode_phase_cnn(self, volume: torch.Tensor, phase_idx: int) -> torch.Tensor:
@@ -222,12 +223,15 @@ class LiRadsNet(nn.Module):
             if data is None:
                 feats.append(self.missing_phase_embed[i])
             else:
-                pixel_values, mask_grids, slice_weights, volume = data
-                dinov2_feat = self.encode_phase(
-                    pixel_values.to(device), mask_grids.to(device), slice_weights.to(device)
-                )
+                mask_grids, slice_weights, volume = data
+                # Same volume feeds both branches -- backbone.Dinov2SliceEncoder
+                # does its own patch-alignment padding/pseudo-RGB/ImageNet
+                # normalization internally now, so there's no separate
+                # pixel_values tensor to build or move to device here.
+                volume = volume.to(device)
+                dinov2_feat = self.encode_phase(volume, mask_grids.to(device), slice_weights.to(device))
                 if self.use_cnn:
-                    cnn_feat = self.encode_phase_cnn(volume.to(device), i)
+                    cnn_feat = self.encode_phase_cnn(volume, i)
                     feats.append(torch.cat([dinov2_feat, cnn_feat], dim=0))
                 else:
                     feats.append(dinov2_feat)
@@ -236,7 +240,7 @@ class LiRadsNet(nn.Module):
     def encode_case_from_backbone_feats(self, backbone_feats: Dict[str, "BackboneFeats"]) -> torch.Tensor:
         """Same as encode_case, but `backbone_feats` (see
         compute_backbone_feats) already carries each phase's backbone
-        output instead of raw pixel_values, so this never touches
+        output instead of a raw volume, so this never touches
         self.backbone -- lets an ensemble of checkpoints share one backbone
         forward pass per case/view (see predict.predict_case_ensemble)."""
         device = self.missing_phase_embed.device
@@ -384,8 +388,8 @@ class ClinicalPredictorNet(nn.Module):
         phase_cls = (cls_token * slice_w.unsqueeze(-1)).sum(dim=0)  # (D,)
         return torch.cat([phase_masked, phase_cls], dim=0)  # (2D,)
 
-    def encode_phase(self, pixel_values: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
-        patch_tokens, cls_token = self.backbone(pixel_values)  # (S,N,D), (S,D)
+    def encode_phase(self, volume: torch.Tensor, mask_grids: torch.Tensor, slice_weights: torch.Tensor) -> torch.Tensor:
+        patch_tokens, cls_token = self.backbone(volume)  # (S,N,D), (S,D)
         return self._pool_phase(patch_tokens, cls_token, mask_grids, slice_weights)
 
     def encode_phase_cnn(self, volume: torch.Tensor, phase_idx: int) -> torch.Tensor:
@@ -401,12 +405,15 @@ class ClinicalPredictorNet(nn.Module):
             if data is None:
                 feats.append(self.missing_phase_embed[i])
             else:
-                pixel_values, mask_grids, slice_weights, volume = data
-                dinov2_feat = self.encode_phase(
-                    pixel_values.to(device), mask_grids.to(device), slice_weights.to(device)
-                )
+                mask_grids, slice_weights, volume = data
+                # Same volume feeds both branches -- backbone.Dinov2SliceEncoder
+                # does its own patch-alignment padding/pseudo-RGB/ImageNet
+                # normalization internally now, so there's no separate
+                # pixel_values tensor to build or move to device here.
+                volume = volume.to(device)
+                dinov2_feat = self.encode_phase(volume, mask_grids.to(device), slice_weights.to(device))
                 if self.use_cnn:
-                    cnn_feat = self.encode_phase_cnn(volume.to(device), i)
+                    cnn_feat = self.encode_phase_cnn(volume, i)
                     feats.append(torch.cat([dinov2_feat, cnn_feat], dim=0))
                 else:
                     feats.append(dinov2_feat)
