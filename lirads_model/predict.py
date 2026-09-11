@@ -31,7 +31,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -43,8 +43,8 @@ from . import config, preprocessing
 from .config import print_to_log
 from .backbone import Dinov2SliceEncoder
 from .dataset import LiRadsCaseDataset, _find_case_dir, collate_cases, encode_clinical_features
-from .model import LiRadsNet, compute_backbone_feats, decode_prediction
-from .predict_clinical import generate_metadata_csv, load_clinical_models
+from .model import ClinicalPredictorNet, LiRadsNet, compute_backbone_feats, decode_prediction
+from .predict_clinical import generate_metadata_csv, load_clinical_models, predict_case_metadata_from_backbone_feats
 from .splits import fold_tagged_path, load_fold
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -197,8 +197,8 @@ def predict_case_ensemble(
     device: torch.device,
     max_slices: int = config.MAX_SLICES_PER_CASE,
     tta_views: int = config.TTA_VIEWS,
-    clinical_features: Optional[torch.Tensor] = None,
-) -> str:
+    clinical_models: Optional[Sequence[ClinicalPredictorNet]] = None,
+) -> Tuple[str, Optional[dict]]:
     """Runs every model in `models` on the same case and majority-votes over
     their decoded predictions (see _forward_with_tta for the single-model
     equivalent this supersedes for an ensemble of more than one checkpoint).
@@ -214,11 +214,38 @@ def predict_case_ensemble(
     pooling/head work downstream of the backbone actually differs. Each
     model still decides its own category gate off that shared backbone
     output and only TTA-averages its own ordinal logits when its own gate
-    says "ordinal", same as _forward_with_tta. With a single model this
-    produces the same predictions as predict_case(), modulo TTA views now
-    coming from one shared augmented-view sequence instead of a fresh
-    np.random.default_rng() per model -- immaterial to the TTA-averaged
-    result, which was always noise-averaging over random views either way.
+    says "ordinal", same as _forward_with_tta. With a single model and no
+    clinical_models this produces the same predictions as predict_case(),
+    modulo TTA views now coming from one shared augmented-view sequence
+    instead of a fresh np.random.default_rng() per model -- immaterial to
+    the TTA-averaged result, which was always noise-averaging over random
+    views either way.
+
+    `clinical_models`: when given, predict_clinical.ClinicalPredictorNet
+    checkpoint(s) that synthesize this case's clinical/tabular row (see
+    predict_clinical's module docstring for why the real challenge input
+    never supplies one directly), fed straight into every model in
+    `models`'s clinical branch -- the same two stages submission/run.py
+    needs per case, fused into one call so they share the one deterministic
+    (unaugmented) backbone pass between them instead of each recomputing
+    it separately. That sharing is exact, not an approximation:
+    predict_clinical.predict_case_metadata's own preprocessing (no
+    augmentation, same max_slices) and this function's deterministic pass
+    were always computing bit-identical inputs on the same case -- only the
+    main ensemble's TTA views need extra (augmented) backbone passes,
+    predict_case_metadata never used TTA. None (the default) leaves every
+    model in `models` to fall back to its learned missing-clinical
+    embedding, same as always passing clinical_features=None used to.
+
+    Returns (prediction_label, clinical_row): clinical_row is
+    predict_clinical.predict_case_metadata_from_backbone_feats's synthesized
+    dict when `clinical_models` is given and succeeds, else None. A
+    clinical-prediction failure is caught here, per case, so it only makes
+    this case fall back to the missing-clinical embedding -- it never
+    raises, and never touches this or any other case's main prediction
+    (matching submission/run.py's previous two-stage behavior, where
+    generate_metadata_csv already skipped a failed case rather than
+    raising).
     """
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
@@ -227,6 +254,18 @@ def predict_case_ensemble(
 
     phase_data = preprocessing.build_case_tensors_from_volumes(phase_vols, mask_vol, max_slices)
     backbone_feats = compute_backbone_feats(shared_backbone, phase_data, device)
+
+    clinical_row = None
+    if clinical_models:
+        try:
+            clinical_row = predict_case_metadata_from_backbone_feats(clinical_models, backbone_feats, mask_path, case_id)
+        except Exception as e:
+            print(
+                f"  WARNING: clinical-metadata prediction failed for {case_id} ({e}); "
+                "falling back to missing-clinical embedding for this case",
+                file=sys.stderr,
+            )
+    clinical_features = encode_clinical_features(clinical_row).unsqueeze(0) if clinical_row is not None else None
 
     state = []
     for model in models:
@@ -256,7 +295,7 @@ def predict_case_ensemble(
         decode_prediction(s["logits_cat"], s["ord_sum"], s["model"].ordinal_head_type, s["model"].cat_names)
         for s in state
     ]
-    return _remap_for_submission(majority_vote(labels))
+    return _remap_for_submission(majority_vote(labels)), clinical_row
 
 
 @torch.no_grad()

@@ -1,21 +1,23 @@
 """
-Real-model timing smoke test: runs ONE inference pass through the real
-(vendored) DINOv2 backbone -- both the clinical-metadata stage
-(predict_clinical.predict_case_metadata) and the main ensemble
-(predict.predict_case_ensemble) -- the same two calls submission/run.py
-makes per case, in the same order, one feeding the other -- and logs the
-wall-clock time each stage took. Meant to be run manually on a machine that
-actually has the vendored snapshot (and ideally a GPU), e.g. the HPC node,
-to get a realistic per-case inference time estimate ahead of a real
-174-case submission run -- NOT as part of the regular fast test suite.
+Real-model timing smoke test: runs ONE fused inference pass through the
+real (vendored) DINOv2 backbone -- predict.predict_case_ensemble, which now
+runs the clinical-predictor ensemble and the main LiRadsNet ensemble
+together on the same case, sharing one deterministic backbone pass between
+them (see its docstring) -- the same single call submission/run.py makes
+per case, and logs the wall-clock time it took. Meant to be run manually on
+a machine that actually has the vendored snapshot (and ideally a GPU), e.g.
+the HPC node, to get a realistic per-case inference time estimate ahead of
+a real 174-case submission run -- NOT as part of the regular fast test
+suite.
 
 Unlike tests/test_smoke.py (CPU-only, no-internet, uses a tiny random
 backbone stub so it runs in seconds), this test needs
 lirads_model/vendor/dinov2-with-registers-large to actually be present (see
 scripts/vendor_dinov2.sh) and is expected to take real wall-clock time --
-DINOv2-large forward passes, times config.TTA_VIEWS+1 views, times however
-many checkpoints are given, plus one more clinical-predictor pass. It's
-skipped automatically wherever that vendored snapshot isn't there.
+one clinical-predictor-ensemble pass off the shared backbone output, plus
+config.TTA_VIEWS+1 backbone views for however many main checkpoints are
+given. It's skipped automatically wherever that vendored snapshot isn't
+there.
 
 By default it builds *untrained* LiRadsNet/ClinicalPredictorNet models
 (random head weights) on top of the real backbone and runs them against one
@@ -53,7 +55,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lirads_model import config, predict, predict_clinical
 from lirads_model.backbone import Dinov2SliceEncoder
-from lirads_model.dataset import encode_clinical_features
 from lirads_model.model import ClinicalPredictorNet, LiRadsNet
 
 
@@ -125,39 +126,29 @@ def test_real_model_inference_time() -> None:
         case_dir = os.path.join(tmp, case_id)
         _make_synthetic_case(case_dir, case_id)
 
-        # Clinical-metadata stage -- the same per-case work run.py's
-        # generate_metadata_csv (predict_clinical.predict_case_metadata) does
-        # for every case before its main loop, since the real challenge
-        # input never supplies clinical metadata directly (see run.py's
-        # docstring). Timed on its own since it's a separate real backbone
-        # pass, on the same fixture case, before the main ensemble runs.
-        clinical_start = time.perf_counter()
-        clinical_row = predict_clinical.predict_case_metadata(clinical_models, case_dir, case_id)
-        clinical_elapsed = time.perf_counter() - clinical_start
-        clinical_features = encode_clinical_features(clinical_row).unsqueeze(0)
+        # Single fused call -- same one submission/run.py makes per case
+        # (see its main loop). The clinical-predictor ensemble and the main
+        # LiRadsNet ensemble now share one deterministic backbone pass (see
+        # predict.predict_case_ensemble's docstring), so clinical and main
+        # inference are no longer two separately-timeable backbone passes;
+        # this times the whole fused per-case pipeline as one number.
+        start = time.perf_counter()
+        label, clinical_row = predict.predict_case_ensemble(
+            models, case_dir, case_id, device, clinical_models=clinical_models,
+        )
+        elapsed = time.perf_counter() - start
 
-        # Main ensemble pass -- same call submission/run.py makes per case
-        # (see its main loop), at the real submission defaults
-        # (config.TTA_VIEWS, config.MAX_SLICES_PER_CASE), now fed the
-        # clinical-predictor's synthesized row exactly as run.py would
-        # (instead of clinical_features=None, which is only what run.py
-        # falls back to when no model/clinical/ checkpoints are bundled).
-        main_start = time.perf_counter()
-        label = predict.predict_case_ensemble(models, case_dir, case_id, device, clinical_features=clinical_features)
-        main_elapsed = time.perf_counter() - main_start
-
-        total_elapsed = clinical_elapsed + main_elapsed
         msg = (
-            f"real-model inference time for 1 case: {total_elapsed:.2f}s total "
-            f"(clinical: {clinical_elapsed:.2f}s + main: {main_elapsed:.2f}s), "
-            f"model load: {load_elapsed:.2f}s, {len(models)} main + {len(clinical_models)} clinical "
+            f"real-model inference time for 1 case: {elapsed:.2f}s "
+            f"(model load: {load_elapsed:.2f}s, {len(models)} main + {len(clinical_models)} clinical "
             f"checkpoint(s), TTA_VIEWS={config.TTA_VIEWS}, MAX_SLICES_PER_CASE={config.MAX_SLICES_PER_CASE}, "
-            f"device={device} -> predicted {label} (synthesized clinical row: {clinical_row})"
+            f"device={device}) -> predicted {label} (synthesized clinical row: {clinical_row})"
         )
         print(msg)
         config.print_to_log(msg)
 
         assert label in config.VALID_LABELS
+        assert clinical_row is not None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
