@@ -329,7 +329,8 @@ def predict_case_ensemble(
         f"  [timing] {case_id}: total={_t_total:.2f}s "
         f"preprocess={_t_preprocess:.2f}s backbone={_t_backbone:.2f}s head={_t_head:.2f}s "
         f"({len(models)} model(s), {n_tta_views_run}/{tta_views} TTA view(s) run, "
-        f"clinical={'yes' if clinical_models else 'no'})"
+        f"clinical={'yes' if clinical_models else 'no'}, device={device}, "
+        f"cuda_available={torch.cuda.is_available()})"
     )
 
     return _remap_for_submission(majority_vote(labels)), clinical_row
