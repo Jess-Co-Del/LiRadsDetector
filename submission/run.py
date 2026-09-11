@@ -37,9 +37,13 @@ from lirads_model.dataset import encode_clinical_features
 from lirads_model.predict import load_models, predict_case_ensemble
 from lirads_model.predict_clinical import generate_metadata_csv, load_clinical_models
 
-DATA_ROOT = "/app/data/cases"
+DATA_ROOT = "/leonardo_scratch/fast/EUHPC_D35_139/nnunet_base/nnunet_format/amplifai/batch_001/cases" # "/app/data/cases"
 MODEL_DIR = os.path.join(_HERE, "model")
 CLINICAL_MODEL_DIR = os.path.join(MODEL_DIR, "clinical")
+
+
+from time import time
+from datetime import datetime
 
 
 def main() -> None:
@@ -50,7 +54,9 @@ def main() -> None:
     cases_path = os.path.join(input_dir, "sample_cases.csv")
     cases = pd.read_csv(cases_path)
     case_ids = cases["case_id"].tolist()
-    print(f"Processing {len(case_ids)} cases...")
+    timestamp = time()
+    dt_object = datetime.fromtimestamp(timestamp)
+    print(f"{dt_object}: Processing {len(case_ids)} cases...")
 
     checkpoint_paths = sorted(glob.glob(os.path.join(MODEL_DIR, "*.pt")))
     if not checkpoint_paths:
@@ -95,11 +101,15 @@ def main() -> None:
             print(f"  WARNING: {case_id} failed ({e}); using fallback label", file=sys.stderr)
             prediction = config.FALLBACK_LABEL
         results.append({"case_id": case_id, "prediction": prediction})
-        print(f"  {case_id}: {prediction}")
+        timestamp = time()
+    dt_object = datetime.fromtimestamp(timestamp)
+    print(f"{dt_object}: {case_id}: {prediction}")
 
     out_path = os.path.join(output_dir, "predictions.csv")
     pd.DataFrame(results).to_csv(out_path, index=False)
-    print(f"\nDone. {len(results)} predictions written to {out_path}")
+    timestamp = time()
+    dt_object = datetime.fromtimestamp(timestamp)
+    print(f"{dt_object}: \nDone. {len(results)} predictions written to {out_path}")
 
 
 if __name__ == "__main__":

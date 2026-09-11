@@ -183,44 +183,7 @@ python -m lirads_model.predict \
 
 `--checkpoint` accepts more than one path (`--checkpoint ckpt_a.pt ckpt_b.pt ckpt_c.pt`); with more than one, each model's decoded prediction is majority-voted per case (ties broken by whichever tied label the earliest-listed model predicted).
 
-## 6. Build the submission zip
-
-```bash
-cp checkpoints/lirads_model_fold0.pt submission/model/   # mkdir -p submission/model first
-cd submission
-./build.sh
-zip -r submission.zip run.py metadata lirads_model/ model/ packages/
-```
-
-`build.sh` copies the top-level `lirads_model/` package (including the vendored DINOv2 snapshot) into `submission/` and bundles `nibabel` and `transformers` (+ their light deps) into `packages/`, warning if the vendored snapshot or checkpoints are missing.
-
-`model/` can hold more than one checkpoint (e.g. `lirads_model_fold0.pt`, `lirads_model_fold1.pt`, ...) — `run.py` globs everything in `model/*.pt`, loads them all, and majority-votes their predictions per case. With a single checkpoint it behaves exactly as before.
-
-## 7. Test offline before uploading
-
-Network is disabled in the real environment, so test the exact zip inside the same Docker image first — see the full recipe in `amplifai-codabench/SUBMISSION_GUIDE.md` ("Test your submission locally before uploading"):
-
-```bash
-mkdir -p /tmp/test_input /tmp/test_output
-echo "case_id" > /tmp/test_input/sample_cases.csv
-echo "CASE00001" >> /tmp/test_input/sample_cases.csv
-
-unzip -o submission.zip -d /tmp/test_submission
-
-docker run --rm --network none --gpus all \
-  -v /tmp/test_submission:/app/ingested_program:ro \
-  -v /path/to/data:/app/data:ro \
-  -v /tmp/test_input:/app/input_data:ro \
-  -v /tmp/test_output:/app/output \
-  codalab/codalab-legacy:gpu310 \
-  python3 /app/ingested_program/run.py /app/input_data /app/output
-
-cat /tmp/test_output/predictions.csv
-```
-
-Then upload `submission.zip` on the [AMPLIFAI Codabench page](https://www.codabench.org/competitions/14290/).
-
-## Evaluating predictions locally
+## 6. Evaluating predictions locally
 
 ```bash
 python amplifai-codabench/evaluate.py \
