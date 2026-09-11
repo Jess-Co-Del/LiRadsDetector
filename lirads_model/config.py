@@ -177,7 +177,7 @@ AUGMENT_INTENSITY_SCALE_RANGE = (0.9, 1.1)   # multiplicative HU jitter range
 # ordinal decision. Never applied to the category gate itself, and never
 # applied at training time. 0 disables TTA (single deterministic pass, the
 # original behavior).
-TTA_VIEWS = 4
+TTA_VIEWS = 0
 AUGMENT_INTENSITY_PROB = 0.5
 
 # ── Lesion transplantation (training only) ───────────────────────────────────
