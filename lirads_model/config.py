@@ -133,12 +133,13 @@ CLINICAL_EMBED_DIM = 64
 # 9th dim, isn't predicted by any model,it's computed deterministically
 # from the lesion mask instead (see preprocessing.compute_max_diameter_mm).
 #
-# "Unknown" in APHE_CATEGORIES exists only as encode_clinical_features's
-# placeholder for a *missing ground-truth label* (train_metadata.csv rows
-# with a blank aphe cell),it isn't a visual finding, so it's excluded
-# from ClinicalPredictorNet's own output space: the model always commits to
-# one of the 3 real categories.
-APHE_PREDICTABLE_CATEGORIES = [c for c in APHE_CATEGORIES if c != "Unknown"]
+# ClinicalPredictorNet's aphe_head predicts over all of APHE_CATEGORIES,
+# including "Unknown": train_metadata.csv rows with a blank aphe cell are
+# trained as genuine "Unknown" targets (see dataset.ClinicalMetadataDataset),
+# so a case whose images don't clearly support one of the 3 real visual
+# categories can come out of the predictor as "Unknown" too, the same value
+# LiRadsNet's clinical branch already knows how to consume for a real
+# missing-label case (dataset.encode_clinical_features's one-hot).
 
 # ── Per-phase 3D-CNN volume encoder ──────────────────────────────────────────
 # Alongside the 2D DINOv2 slice encoder, each phase's stack of lesion-cropped

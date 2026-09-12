@@ -47,7 +47,7 @@ def load_clinical_model(checkpoint_path: str, device: torch.device, backbone_sou
 
     checkpoint = torch.load(checkpoint_path, map_location=device)
     use_cnn = checkpoint.get("use_cnn", True)
-    aphe_categories = checkpoint.get("aphe_categories", config.APHE_PREDICTABLE_CATEGORIES)
+    aphe_categories = checkpoint.get("aphe_categories", config.APHE_CATEGORIES)
     binary_features = checkpoint.get("binary_features", config.CLINICAL_BINARY_FEATURES)
     model = ClinicalPredictorNet(
         backbone, use_cnn=use_cnn, aphe_categories=aphe_categories, binary_features=binary_features,

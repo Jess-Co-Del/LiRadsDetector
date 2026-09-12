@@ -51,8 +51,9 @@ def compute_pos_weight(binary_targets: np.ndarray) -> torch.Tensor:
 
 @torch.no_grad()
 def evaluate(model: ClinicalPredictorNet, loader: DataLoader, device: torch.device) -> dict:
-    """Returns per-feature precision/recall/f1 (aphe: macro over its 3
-    classes; each binary feature: for its positive class) plus a combined
+    """Returns per-feature precision/recall/f1 (aphe: macro over all of
+    model.aphe_categories, "Unknown" included; each binary feature: for its
+    positive class) plus a combined
     `score` (mean of aphe macro-f1 and the 4 binary features' f1s) used to
     pick the best checkpoint,unweighted across features since none is
     intrinsically more important than another for the downstream clinical
@@ -73,7 +74,7 @@ def evaluate(model: ClinicalPredictorNet, loader: DataLoader, device: torch.devi
     result = {}
     if aphe_true:
         _, _, aphe_f1, _ = precision_recall_fscore_support(
-            aphe_true, aphe_pred, labels=list(range(len(config.APHE_PREDICTABLE_CATEGORIES))),
+            aphe_true, aphe_pred, labels=list(range(len(model.aphe_categories))),
             average="macro", zero_division=0,
         )
         result["aphe_f1"] = float(aphe_f1)
@@ -135,10 +136,17 @@ def train(args: argparse.Namespace) -> None:
     backbone = Dinov2SliceEncoder.from_pretrained()
     model = ClinicalPredictorNet(backbone, use_cnn=args.use_cnn).to(device)
 
-    aphe_counts = pd.Series(train_ds.df["aphe"].dropna().str.strip()).value_counts().to_dict()
-    aphe_class_counts = {i: aphe_counts.get(cat, 0) for i, cat in enumerate(config.APHE_PREDICTABLE_CATEGORIES)}
+    # Counted the same way ClinicalMetadataDataset.__getitem__ assigns
+    # aphe_idx (a blank/unrecognized cell -> "Unknown"), not off the raw CSV
+    # column,otherwise "Unknown"'s class weight below would be computed
+    # from a count of 0 despite it being the aphe_idx these rows actually
+    # train against.
+    aphe_series = train_ds.df["aphe"].apply(lambda a: str(a).strip() if pd.notna(a) else "Unknown")
+    aphe_series = aphe_series.where(aphe_series.isin(model.aphe_categories), "Unknown")
+    aphe_counts = aphe_series.value_counts().to_dict()
+    aphe_class_counts = {i: aphe_counts.get(cat, 0) for i, cat in enumerate(model.aphe_categories)}
     aphe_criterion = nn.CrossEntropyLoss(
-        weight=compute_class_weights(aphe_class_counts, len(config.APHE_PREDICTABLE_CATEGORIES)).to(device),
+        weight=compute_class_weights(aphe_class_counts, len(model.aphe_categories)).to(device),
         ignore_index=-1,
     )
     binary_targets_all = np.stack([
@@ -195,7 +203,7 @@ def train(args: argparse.Namespace) -> None:
                     "epoch": epoch,
                     "best_score": best_score,
                     "use_cnn": args.use_cnn,
-                    "aphe_categories": list(config.APHE_PREDICTABLE_CATEGORIES),
+                    "aphe_categories": list(model.aphe_categories),
                     "binary_features": list(config.CLINICAL_BINARY_FEATURES),
                 },
                 args.out,

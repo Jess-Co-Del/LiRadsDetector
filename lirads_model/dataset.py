@@ -244,7 +244,7 @@ class ClinicalMetadataDataset(Dataset):
         case_ids: Optional[Sequence[str]] = None,
         augment: bool = False,
         transplant: bool = False,
-        aphe_categories: Sequence[str] = config.APHE_PREDICTABLE_CATEGORIES,
+        aphe_categories: Sequence[str] = config.APHE_CATEGORIES,
     ):
         df = pd.read_csv(metadata_csv)
         df.columns = df.columns.str.strip().str.lower()
@@ -309,12 +309,19 @@ class ClinicalMetadataDataset(Dataset):
         label = str(row["lirads_score"]).strip()
         phase_data = self._build_phase_data(case_id, case_dir, label)
 
-        # -1 for a missing/unrecognized aphe label,masked out of the
-        # aphe loss term (see train_clinical.py) rather than trained
-        # against, since there's no real target for those rows. Always this
-        # row's own aphe/washout/capsule, whether or not transplant swapped
-        # in a different background -- see this class's docstring.
-        aphe = str(row["aphe"]).strip() if pd.notna(row["aphe"]) else None
+        # A missing/unrecognized aphe cell is trained as a genuine "Unknown"
+        # target (when self.aphe_categories carries that category,see
+        # config.APHE_CATEGORIES) rather than a real visual finding,so
+        # ClinicalPredictorNet can itself output "Unknown" for a case whose
+        # images don't clearly support one of the 3 real categories.
+        # aphe_idx only falls back to -1 (masked out of the aphe loss term,
+        # see train_clinical.py) if self.aphe_categories doesn't even have an
+        # "Unknown" slot to fall back to. Always this row's own aphe/washout/
+        # capsule, whether or not transplant swapped in a different
+        # background -- see this class's docstring.
+        aphe = str(row["aphe"]).strip() if pd.notna(row["aphe"]) else "Unknown"
+        if aphe not in self.aphe_categories:
+            aphe = "Unknown"
         aphe_idx = self.aphe_categories.index(aphe) if aphe in self.aphe_categories else -1
         binary_targets = torch.tensor([float(row[c]) for c in config.CLINICAL_BINARY_FEATURES], dtype=torch.float32)
 

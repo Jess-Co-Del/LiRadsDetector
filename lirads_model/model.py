@@ -328,7 +328,7 @@ class ClinicalPredictorNet(nn.Module):
         hidden2: int = config.HEAD_HIDDEN_2,
         dropout: float = config.HEAD_DROPOUT,
         use_cnn: bool = True,
-        aphe_categories: Sequence[str] = config.APHE_PREDICTABLE_CATEGORIES,
+        aphe_categories: Sequence[str] = config.APHE_CATEGORIES,
         binary_features: Sequence[str] = config.CLINICAL_BINARY_FEATURES,
     ):
         super().__init__()
@@ -459,7 +459,7 @@ class ClinicalPredictorNet(nn.Module):
 
 def decode_clinical_prediction(
     aphe_logits: torch.Tensor, binary_logits: torch.Tensor,
-    aphe_categories: Sequence[str] = config.APHE_PREDICTABLE_CATEGORIES,
+    aphe_categories: Sequence[str] = config.APHE_CATEGORIES,
     binary_features: Sequence[str] = config.CLINICAL_BINARY_FEATURES,
 ) -> dict:
     """
