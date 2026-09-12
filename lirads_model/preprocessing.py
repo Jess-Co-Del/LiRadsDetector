@@ -8,8 +8,6 @@ from typing import Optional
 import nibabel as nib
 import numpy as np
 import torch
-from scipy.spatial import ConvexHull, QhullError
-from scipy.spatial.distance import pdist
 
 from . import augmentation, config
 
@@ -223,13 +221,14 @@ def prepare_phase_tensors(
 
 def load_case_volumes(
     phase_paths: dict, mask_path: str, label: Optional[str] = None, liver_path: Optional[str] = None,
+    compute_max_diameter: bool = False, device: torch.device = torch.device("cpu"),
 ) -> tuple:
     """Loads one case's raw per-phase volumes + lesion mask from disk, all
     resampled to the ART phase's voxel grid. Returns (phase_vols, mask_vol,
-    liver_mask_vol), phase_vols a {phase_name: torch.Tensor} dict, mask_vol a
-    bool torch.Tensor,this is the point where each case's data crosses
-    from raw numpy (nibabel's native format) into tensor land; every function
-    downstream of this one (_resample_to_shape above, and
+    liver_mask_vol, max_diameter_mm), phase_vols a {phase_name: torch.Tensor}
+    dict, mask_vol a bool torch.Tensor,this is the point where each case's
+    data crosses from raw numpy (nibabel's native format) into tensor land;
+    every function downstream of this one (_resample_to_shape above, and
     build_case_tensors_from_volumes/prepare_phase_tensors below) works
     entirely in torch.Tensor. This is the loading half of
     build_case_tensors(), split out so lesion_transplant.py can load a
@@ -246,14 +245,37 @@ def load_case_volumes(
     (segment_livers.py hasn't run on this case),callers that need it (only
     lesion_transplant.transplant_case) should treat that as "this case can't
     be a transplant recipient" rather than an error.
+
+    `compute_max_diameter`: when True, also measures max_diameter_mm (see
+    compute_max_diameter_mm) from the mask right here, before it gets
+    resampled onto the ART grid below,so the measurement uses the mask
+    file's own native pixel spacing (exact, not an ART-grid interpolation
+    artifact) and this function's own single nibabel load of it, instead of
+    predict_clinical.py re-opening mask_path a second time just for this.
+    False (the default) skips it entirely,every training call site
+    (dataset.py) goes through this function once per sample and has no use
+    for this value, so it shouldn't pay for it. None when False, or when
+    True but the mask couldn't be measured (config.NO_LESION_LABEL, or the
+    load failed below).
+
+    `device`: only meaningful with compute_max_diameter=True,runs that
+    search on this device (see compute_max_diameter_mm).
     """
+    max_diameter_mm = None
     if label == config.NO_LESION_LABEL:
         mask_vol = torch.zeros((512, 512, 200), dtype=torch.bool)
+        if compute_max_diameter:
+            max_diameter_mm = 0.0
     else:
         try:
-            mask_vol = load_volume(mask_path) > 0.5
+            mask_img = nib.load(mask_path)
+            mask_vol = torch.from_numpy(np.asarray(mask_img.get_fdata()) > 0.5)
+            if compute_max_diameter:
+                max_diameter_mm = compute_max_diameter_mm(mask_vol.to(device), mask_img.header.get_zooms())
         except:  # During inference I do not have labels, so a no lesion does have the mask_volume.
             mask_vol = torch.zeros((512, 512, 200), dtype=torch.bool)
+            if compute_max_diameter:
+                max_diameter_mm = 0.0
 
     phase_vols = {}
     arterial_shape = None
@@ -272,7 +294,7 @@ def load_case_volumes(
     if liver_path and os.path.exists(liver_path):
         liver_mask_vol = _resample_to_shape(load_volume(liver_path) > 0.5, arterial_shape)
 
-    return phase_vols, mask_vol, liver_mask_vol
+    return phase_vols, mask_vol, liver_mask_vol, max_diameter_mm
 
 
 def build_case_tensors_from_volumes(
@@ -349,7 +371,7 @@ def build_case_tensors(
     `augment` is True, so callers that don't augment (eval/test/inference)
     can just leave it False.
     """
-    phase_vols, mask_vol, _ = load_case_volumes(phase_paths, mask_path, label=label)
+    phase_vols, mask_vol, _, _ = load_case_volumes(phase_paths, mask_path, label=label)
     return build_case_tensors_from_volumes(
         phase_vols, mask_vol, max_slices, augment=augment, rng=rng, anatomy=anatomy,
     )
@@ -375,7 +397,7 @@ def find_case_liver_path(case_dir: str) -> str:
     return os.path.join(case_dir, "annotations", "liver.nii.gz")
 
 
-def compute_max_diameter_mm(mask_path: str) -> float:
+def compute_max_diameter_mm(mask: torch.Tensor, zooms: tuple) -> float:
     """
     Deterministic (non-learned) stand-in for train_metadata.csv's
     max_diameter_mm column, used by predict_clinical.py to fill that one
@@ -388,62 +410,37 @@ def compute_max_diameter_mm(mask_path: str) -> float:
     (in mm) between two of that slice's mask pixels, and returns the max of
     that over all slices. 0.0 for an empty mask.
 
-    Reads the mask directly with nibabel rather than going through
-    load_volume/load_case_volumes (which drop the affine and resample onto
-    another phase's grid for model input) so the physical pixel spacing
-    used for the mm conversion is exact, straight from the file's own
-    header, and handles anisotropic in-plane spacing by scaling each axis
-    by its own zoom before measuring distance.
+    `mask`: a full-resolution boolean torch.Tensor read straight from the
+    mask file (see load_case_volumes's compute_max_diameter,its one
+    caller), not resampled onto another phase's grid,and `zooms`: that
+    same file's own nibabel header zooms,so the mm conversion is exact,
+    and handles anisotropic in-plane spacing by scaling each axis by its own
+    zoom before measuring distance. Runs on whatever device `mask` is
+    already on (see load_case_volumes,it moves the mask there once,
+    before calling this,rather than this function doing its own
+    device transfer).
 
-    Within a slice, the true farthest-apart pair of points is always two
-    vertices of that point set's convex hull (an interior point can never
-    be farther from every other point than some hull vertex is), so
-    reducing to hull vertices before the pairwise search is exact, not an
-    approximation,it just avoids an O(pixel_count^2) distance search
-    over every foreground pixel in a large lesion slice.
+    The all-pairs distance search within a slice is torch.pdist. Its
+    batched kernel handles a large lesion slice's full foreground pixel set
+    directly and fast enough that the previous numpy implementation's scipy
+    ConvexHull vertex-reduction (needed there only to keep an
+    O(pixel_count^2) CPU search cheap) is no longer necessary -- which also
+    removes that approach's QhullError failure mode on degenerate (thin/
+    collinear-ish) lesion slices entirely, rather than working around it.
     """
-    img = nib.load(mask_path)
-    mask = np.asarray(img.get_fdata()) > 0.5
     if not mask.any():
         return 0.0
 
-    zooms = img.header.get_zooms()
     row_axis, col_axis = (a for a in range(mask.ndim) if a != config.SLICE_AXIS)
-    row_mm, col_mm = float(zooms[row_axis]), float(zooms[col_axis])
+    scale = torch.tensor([zooms[row_axis], zooms[col_axis]], dtype=torch.float32, device=mask.device)
 
     best_mm = 0.0
     for z in range(mask.shape[config.SLICE_AXIS]):
-        mask2d = mask.take(z, axis=config.SLICE_AXIS)
+        mask2d = mask.select(config.SLICE_AXIS, z)
         if not mask2d.any():
             continue
-        rows, cols = np.nonzero(mask2d)
-        points_mm = np.stack([rows * row_mm, cols * col_mm], axis=1)
-        if len(points_mm) < 2:
+        points_mm = mask2d.nonzero().float() * scale
+        if points_mm.shape[0] < 2:
             continue
-        if len(points_mm) >= 4:
-            try:
-                # qhull_options="QJ": joggles the input points by a
-                # negligible amount before computing the hull, which avoids
-                # spurious QhullError on near-degenerate (thin/collinear-ish)
-                # lesion slices -- real CT lesion masks hit this often
-                # enough that, without it, the except branch below (an
-                # O(pixel_count^2) search over every foreground pixel
-                # instead of just the hull's handful of vertices) has been
-                # measured taking 60-100+ seconds on a single real case,
-                # entirely because of one or two slices' shape, versus
-                # ~0.2s for a case that never hits it. The joggle perturbs
-                # the hull by well under a pixel, immaterial at mm scale.
-                points_mm = points_mm[ConvexHull(points_mm, qhull_options="QJ").vertices]
-            except QhullError:
-                pass  # truly degenerate even joggled,fall back below
-        if len(points_mm) > 500:
-            # Residual safety net for the rare case the joggle still isn't
-            # enough: pdist computes the same exact all-pairs max distance
-            # without materializing the full (n,n,2) broadcast array the
-            # naive approach below would for a large, unreduced point set.
-            slice_max = float(pdist(points_mm).max())
-        else:
-            diffs = points_mm[:, None, :] - points_mm[None, :, :]
-            slice_max = float(np.sqrt((diffs ** 2).sum(axis=-1)).max())
-        best_mm = max(best_mm, slice_max)
+        best_mm = max(best_mm, float(torch.pdist(points_mm).max()))
     return round(best_mm, 1)

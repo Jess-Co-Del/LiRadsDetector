@@ -88,7 +88,7 @@ def _show(ax, ct_slice, mask_slice, bbox, title, ref_mask_slice=None) -> None:
 def plot_case(case_dir: str, case_id: str, phase: str, n_slices: int, rng: np.random.Generator, ax_rows) -> None:
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
-    phase_vols, mask_vol, _ = preprocessing.load_case_volumes(phase_paths, mask_path)
+    phase_vols, mask_vol, _, _ = preprocessing.load_case_volumes(phase_paths, mask_path)
     if phase not in phase_vols:
         raise ValueError(f"{case_id}: phase {phase!r} not among {list(phase_vols)}")
 

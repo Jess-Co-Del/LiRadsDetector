@@ -149,7 +149,7 @@ def _forward_with_tta(
     # of all 4 phases) doesn't depend on augmentation, so redoing it per view
     # was pure waste; only the per-view crop/resize/augment step
     # (build_case_tensors_from_volumes) needs to re-run.
-    phase_vols, mask_vol, _ = preprocessing.load_case_volumes(phase_paths, mask_path)
+    phase_vols, mask_vol, _, _ = preprocessing.load_case_volumes(phase_paths, mask_path)
 
     phase_data = preprocessing.build_case_tensors_from_volumes(phase_vols, mask_vol, max_slices)
     logits_cat, logits_ord = model([phase_data], clinical_features)
@@ -261,7 +261,12 @@ def predict_case_ensemble(
     _t0 = time.perf_counter()
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
-    phase_vols, mask_vol, _ = preprocessing.load_case_volumes(phase_paths, mask_path)
+    # compute_max_diameter=True measures max_diameter_mm right here, off this
+    # same load, so predict_case_metadata_from_backbone_feats below doesn't
+    # need to re-open mask_path itself just to measure it a second time.
+    phase_vols, mask_vol, _, max_diameter_mm = preprocessing.load_case_volumes(
+        phase_paths, mask_path, compute_max_diameter=bool(clinical_models), device=device,
+    )
     shared_backbone = models[0].backbone
 
     phase_data = preprocessing.build_case_tensors_from_volumes(phase_vols, mask_vol, max_slices)
@@ -275,7 +280,7 @@ def predict_case_ensemble(
     clinical_row = None
     if clinical_models:
         try:
-            clinical_row = predict_case_metadata_from_backbone_feats(clinical_models, backbone_feats, mask_path, case_id)
+            clinical_row = predict_case_metadata_from_backbone_feats(clinical_models, backbone_feats, max_diameter_mm, case_id)
         except Exception as e:
             print(
                 f"  WARNING: clinical-metadata prediction failed for {case_id} ({e}); "

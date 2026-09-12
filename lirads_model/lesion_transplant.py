@@ -209,13 +209,13 @@ def transplant_case(
     """
     donor_phase_paths = preprocessing.find_case_phase_paths(donor_case_dir, donor_case_id)
     donor_mask_path = preprocessing.find_case_mask_path(donor_case_dir)
-    donor_phase_vols, donor_mask_vol, _ = preprocessing.load_case_volumes(donor_phase_paths, donor_mask_path)
+    donor_phase_vols, donor_mask_vol, _, _ = preprocessing.load_case_volumes(donor_phase_paths, donor_mask_path)
     patch = extract_lesion_patch(donor_phase_vols, donor_mask_vol)
 
     recipient_phase_paths = preprocessing.find_case_phase_paths(recipient_case_dir, recipient_case_id)
     recipient_mask_path = preprocessing.find_case_mask_path(recipient_case_dir)
     liver_path = preprocessing.find_case_liver_path(recipient_case_dir)
-    recipient_phase_vols, recipient_mask_vol, liver_mask = preprocessing.load_case_volumes(
+    recipient_phase_vols, recipient_mask_vol, liver_mask, _ = preprocessing.load_case_volumes(
         recipient_phase_paths, recipient_mask_path, label=config.NO_LESION_LABEL, liver_path=liver_path,
     )
     if liver_mask is None:

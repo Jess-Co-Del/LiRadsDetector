@@ -86,7 +86,7 @@ def plot_transplant_row(
 
     donor_phase_paths = preprocessing.find_case_phase_paths(donor_dir, donor_case_id)
     donor_mask_path = preprocessing.find_case_mask_path(donor_dir)
-    donor_phase_vols, donor_mask_vol, _ = preprocessing.load_case_volumes(donor_phase_paths, donor_mask_path)
+    donor_phase_vols, donor_mask_vol, _, _ = preprocessing.load_case_volumes(donor_phase_paths, donor_mask_path)
     donor_z = int(_pick_slice_indices(donor_mask_vol, 1)[0])
     _crop_and_show(ax_row[0], donor_phase_vols[phase], donor_mask_vol, donor_z, f"{donor_case_id} ({donor_label})\ndonor original")
 

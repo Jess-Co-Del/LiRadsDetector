@@ -65,7 +65,7 @@ def load_clinical_models(checkpoint_paths: Sequence[str], device: torch.device, 
 def predict_case_metadata_from_backbone_feats(
     models: Sequence[ClinicalPredictorNet],
     backbone_feats: dict,
-    mask_path: str,
+    max_diameter_mm: float,
     case_id: str,
 ) -> dict:
     """Same as predict_case_metadata, but `backbone_feats` (see
@@ -74,9 +74,12 @@ def predict_case_metadata_from_backbone_feats(
     ensemble share the exact same deterministic (unaugmented) backbone pass
     the main LiRadsNet ensemble's own deterministic pass uses -- see
     predict.predict_case_ensemble, which is what actually fuses the two for
-    submission/run.py. `mask_path` is still needed directly (not via
-    backbone_feats) for max_diameter_mm, which is deterministic geometry
-    read straight from the mask file, not a model output."""
+    submission/run.py. `max_diameter_mm` is still deterministic geometry
+    from the mask, not a model output, so it isn't part of backbone_feats
+    either -- but it comes in already measured by the caller's own
+    preprocessing.load_case_volumes(compute_max_diameter=True) call, which
+    loads the mask once for both this and backbone_feats, instead of this
+    function re-opening the mask file itself just to measure it again."""
     aphe_categories = models[0].aphe_categories
     binary_features = models[0].binary_features
     aphe_prob_sum = torch.zeros(len(aphe_categories))
@@ -97,7 +100,7 @@ def predict_case_metadata_from_backbone_feats(
     for name, p in zip(binary_features, binary_prob.tolist()):
         result[name] = int(p >= 0.5)
     result["case_id"] = case_id
-    result["max_diameter_mm"] = preprocessing.compute_max_diameter_mm(mask_path)
+    result["max_diameter_mm"] = max_diameter_mm
     return result
 
 
@@ -129,10 +132,18 @@ def predict_case_metadata(
     reuses a pass computed elsewhere."""
     phase_paths = preprocessing.find_case_phase_paths(case_dir, case_id)
     mask_path = preprocessing.find_case_mask_path(case_dir)
-    phase_data = preprocessing.build_case_tensors(phase_paths, mask_path, max_slices)
     device = models[0].missing_phase_embed.device
+    # load_case_volumes(compute_max_diameter=True) measures max_diameter_mm
+    # from the mask right where it's loaded (native pixel spacing, no
+    # resampling), instead of build_case_tensors's plain path re-opening
+    # mask_path again downstream in predict_case_metadata_from_backbone_feats
+    # just to measure the same mask a second time.
+    phase_vols, mask_vol, _, max_diameter_mm = preprocessing.load_case_volumes(
+        phase_paths, mask_path, compute_max_diameter=True, device=device,
+    )
+    phase_data = preprocessing.build_case_tensors_from_volumes(phase_vols, mask_vol, max_slices)
     backbone_feats = compute_backbone_feats(models[0].backbone, phase_data, device)
-    return predict_case_metadata_from_backbone_feats(models, backbone_feats, mask_path, case_id)
+    return predict_case_metadata_from_backbone_feats(models, backbone_feats, max_diameter_mm, case_id)
 
 
 def generate_metadata_csv(
