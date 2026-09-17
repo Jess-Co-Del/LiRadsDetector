@@ -40,60 +40,10 @@ Alongside DINOv2, each phase gets its own `PhaseVolumeCNN` (`lirads_model/model.
 
 The challenge's own submission input is just a `case_id` — no clinical metadata — so even when this branch is enabled it's optional per case: when `clinical_features` isn't passed to `LiRadsNet.forward` (as in `predict.predict_case`, used by `submission/run.py`), a learned placeholder embedding (`missing_clinical_embed`) stands in, the same pattern already used for a missing CT phase. Training (`train.py`, via `LiRadsCaseDataset`) always supplies the real per-case vector when the branch is enabled.
 
-### Data augmentation
-
-Random rotation, zoom, horizontal/vertical flip, and HU intensity jitter (`lirads_model/augmentation.py`) are applied to the training split only (`LiRadsCaseDataset(..., augment=True)`, wired up by default in `train.py`; `--no-augment` disables it). Each transform is independently enabled with its own probability (see the `AUGMENT_*` constants in `config.py`), and one set of parameters is sampled per case and reused identically for every slice of every phase — so the 3D-CNN branch still sees a spatially coherent volume, the phases stay mutually aligned, and the lesion mask is transformed in lockstep with the image so mask-guided pooling stays correct. Validation/test splits and inference (`predict.py`, `submission/run.py`) never augment.
-
-### Lesion transplantation
-
-`LR-1`/`LR-2`/`LR-3` have very few real cases in `train_metadata.csv`. `lirads_model/lesion_transplant.py` (`train.py --transplant`, off by default) extracts a donor case's real, correctly-labeled lesion — the full 3D patch, across every CT phase, so its true multi-phase enhancement pattern is preserved — and pastes it into a different recipient case's liver at a random plausible location, blending the seam with a distance-transform alpha feather (exact donor signal deep inside the lesion, smooth taper to the recipient's own tissue at the boundary — not a global blur, which would wash out lesions smaller than the feather radius). The synthesized case keeps the donor's real label; only the surrounding parenchyma, vasculature, and noise texture vary each time it's drawn, multiplying background diversity per rare lesion instance without inventing a fake one.
-
-Placement is constrained to the recipient's own liver rather than approximated, using a liver segmentation mask produced ahead of time by a pretrained nnUNetv2 model — run `scripts/segment_livers.py` once (offline, wherever the model + case data live) before training with `--transplant`; it saves one `<case_dir>/annotations/liver.nii.gz` per case, the same per-case layout as the lesion mask. Recipients are always drawn from `config.NO_LESION_LABEL` cases when available (real liver background, no competing real lesion to accidentally leave unlabeled in the synthesized mask), and a case without a liver mask on disk simply isn't used as a recipient — `--transplant` degrades gracefully to no-op if `segment_livers.py` hasn't been run yet, rather than failing.
-
-## Layout
-
-```
-lirads_model/
-├── config.py         # labels, slice cap, image/patch sizes, CT windowing, hub names
-├── preprocessing.py  # NIfTI loading, lesion slice sampling, crop/resize/window, mask->patch-grid
-├── augmentation.py    # train-only rotation/zoom/flip/intensity augmentation, shared across a case's phases
-├── lesion_transplant.py # train-only lesion copy-paste augmentation for rare ordinal classes (needs scripts/segment_livers.py output)
-├── backbone.py        # frozen DINOv2 wrapper (transformers.AutoModel; local/offline or hub/pretrained)
-├── model.py           # LiRadsNet: mask-guided DINOv2 pooling + per-phase 3D-CNN + dual head, decode_prediction()
-├── dataset.py          # PyTorch Dataset over a metadata CSV (optionally filtered to a case_id list) + case folders
-├── splits.py            # builds N stratified train/val/test folds over a metadata CSV, saved as JSON
-├── train.py            # training loop for one fold, validates each epoch with the real challenge metric, tests on the held-out fold at the end
-├── predict.py          # load a checkpoint + run inference (one case, or CLI over a fold's test split)
-└── vendor/dinov2-with-registers-large/ # populated by scripts/vendor_dinov2.sh, not checked in
-
-scripts/
-├── vendor_dinov2.sh    # one-time: downloads a local HF Hub snapshot for offline backbone reconstruction
-├── segment_livers.py   # one-time (per dataset): runs a pretrained nnUNetv2 model to produce per-case liver.nii.gz, needed by --transplant
-└── diagnose_zextent_crop.py # diagnostic: measures how much of a lesion mask lesion_slice_indices's fixed-size window trims, by class
-
-submission/
-├── run.py              # challenge entry point (SUBMISSION_GUIDE.md contract)
-├── metadata             # `command: ...` file required by the challenge harness
-└── build.sh             # bundles nibabel + copies lirads_model/ into the submission dir
-
-tests/
-└── test_smoke.py        # CPU-only, no-internet, no-GPU pipeline shape/sanity check
-```
-
-## Setup
+## 1. Setup
 
 ```bash
 pip install -r requirements-dev.txt
-```
-
-This is the **training-time** environment (needs a GPU and internet). The challenge's own inference container already ships torch/numpy/pandas/scipy/scikit-learn — see `amplifai-codabench/SUBMISSION_GUIDE.md` for that image's exact contents and the compiled-package ABI warning before bundling anything extra.
-
-## 1. Vendor the DINOv2 weights (once, needs internet)
-
-Submission containers have no network access, so the backbone must be loadable offline. This downloads a local HF Hub snapshot (architecture + pretrained weights) into `lirads_model/vendor/dinov2-with-registers-large/`:
-
-```bash
-./scripts/vendor_dinov2.sh
 ```
 
 ## 2. Get the training data
@@ -110,40 +60,7 @@ Also grab a metadata CSV covering the whole dataset, with `case_id`, `lirads_sco
 
 Note: not every case has all four phases — `preprocessing.py`/`model.py` already handle a phase being absent.
 
-## 3. Sanity-check the pipeline (no GPU, no data, no internet)
-
-```bash
-python3 tests/test_smoke.py
-```
-
-Builds a synthetic case on the fly and a tiny random backbone stub, and runs the full preprocessing → pooling → dual-head pipeline, checking shapes and that the decoded label is valid. This is what to re-run after any pipeline change, before spending GPU time.
-
-## 4. Build train/val/test splits
-
-```bash
-python -m lirads_model.splits \
-  --metadata_csv ./data/metadata.csv \
-  --n_folds 5 \
-  --out ./data/splits.json
-```
-
-Generates a genuine `n_folds`-way `StratifiedKFold` (by `lirads_score`) partition: each case's `test`-fold membership is fixed, and the `n_folds` test sets are disjoint and together cover every case exactly once (unlike independent random draws). Within each fold's non-test remainder, `train`/`val` is a further stratified random split at `--val_frac` (default 0.15). All folds are written to one JSON keyed by fold index (`{"0": {"train": [...], "val": [...], "test": [...]}, "1": {...}, ...}`) — pick one fold index at training time via `--fold`.
-
-## 4b. (optional) Segment livers, for lesion transplantation
-
-Only needed if you plan to train with `--transplant` (see "Lesion transplantation" above):
-
-```bash
-python -m scripts.segment_livers \
-  --metadata_csv ./data/metadata.csv \
-  --data_root ./data/cases \
-  --model_dir /path/to/nnUNet_results/Dataset003_Liver/nnUNetTrainer__nnUNetPlans__2d \
-  --folds 0 1 2 3 4
-```
-
-Runs a pretrained nnUNetv2 model over every case's `VEN`-phase volume (`--phase` to change), saving `<case_dir>/annotations/liver.nii.gz`. `--model_dir` is an `nnUNet_results/<Dataset>/<Trainer>__<Plans>__<configuration>` folder from an nnUNetv2 training run; needs the `nnunetv2` package (not one of this repo's own dependencies — install separately). Cases that already have a `liver.nii.gz` are skipped unless `--overwrite` is passed.
-
-## 5. Train
+## 3. Train
 
 ```bash
 python -m lirads_model.train \
@@ -189,7 +106,7 @@ python -m lirads_model.predict \
 
 `--checkpoint` accepts more than one path (`--checkpoint ckpt_a.pt ckpt_b.pt ckpt_c.pt`); with more than one, each model's decoded prediction is majority-voted per case (ties broken by whichever tied label the earliest-listed model predicted).
 
-## 6. Evaluating predictions locally
+## 4. Evaluating predictions locally
 
 ```bash
 python amplifai-codabench/evaluate.py \
