@@ -2,7 +2,11 @@
 
 A LI-RADS classifier for the [AMPLIFAI challenge](https://um-ihc-ca2i.github.io/amplifai-challenge/index.html): given a multi-phase CT scan (ART/VEN/DEL/DRY) and a target lesion segmentation, predicts one of `LR-1, LR-2, LR-3, LR-4, LR-5, LR-M, LR-TIV`.
 
-![LI-RADS overview](scripts/lirads-overview.png)
+<p align="center">
+   <img width="551" height="403" alt="image" src="scripts/lirads-overview.png" /></br>
+   <em>Source: <a href="https://radiologyassistant.nl/abdomen/liver/li-rads">Radiology Assistant — LI-RADS</a></em>
+</p>
+
 
 See [`amplifai-codabench/`](https://github.com/UM-IHC-CA2i/amplifai-codabench.git) for the challenge's own submission spec (`README.md`, `SUBMISSION_GUIDE.md`, `evaluate.py`) — that folder is reference material, not part of this codebase.
 
