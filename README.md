@@ -8,8 +8,6 @@ A LI-RADS classifier for the [AMPLIFAI challenge](https://um-ihc-ca2i.github.io/
 </p>
 
 
-See [`amplifai-codabench/`](https://github.com/UM-IHC-CA2i/amplifai-codabench.git) for the challenge's own submission spec (`README.md`, `SUBMISSION_GUIDE.md`, `evaluate.py`) — that folder is reference material, not part of this codebase.
-
 ## Approach
 
 The model is a hybrid of two image encoders per CT phase — a frozen 2D DINOv2 ViT-L/14 (register-token variant, [`facebook/dinov2-with-registers-large`](https://huggingface.co/facebook/dinov2-with-registers-large), loaded via `transformers.AutoModel`) reading each slice independently, plus a small trainable 3D CNN reading the same slices as one volume:
